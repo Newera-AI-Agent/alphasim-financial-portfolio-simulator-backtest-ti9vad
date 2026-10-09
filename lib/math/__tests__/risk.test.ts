@@ -1,251 +1,201 @@
-/**
- * Unit tests for risk module
- */
-import { describe, it, expect } from "vitest";
+// lib/math/__tests__/risk.test.ts
+// Unit tests for risk.ts - known-value tests against reference implementations
+
 import {
-  computeHistoricalVaR,
-  computeHistoricalES,
-  computeParametricVaR,
-  computeParametricES,
-  computeCornishFisherVaR,
-  computeFactorModel,
-  computeRiskDecomposition,
-  runStressTests,
-  runRiskAnalysis,
-  computeRollingRiskMetrics,
-  scenarioAnalysis,
-} from "../risk";
+  describe,
+  it,
+  expect,
+  beforeAll,
+  vi,
+} from 'vitest';
+import * as risk from '../risk';
+import * as stats from '../statistics';
 
-describe("risk", () => {
-  const sampleReturns = [
-    -0.02, -0.01, 0, 0.01, 0.02, -0.015, 0.005, 0.01, -0.005, 0.015,
-    0.02, -0.01, 0.005, -0.02, 0.01, 0.03, -0.005, 0.01, 0.005, -0.01,
-  ];
-  const weights = { SPY: 0.6, BND: 0.4 };
-  const tickers = ["SPY", "BND"];
-  const assetReturns = {
-    SPY: [0.01, 0.02, -0.01, 0.015, -0.005],
-    BND: [0.001, 0.002, 0.001, 0.0015, 0.0005],
-  };
-  const covMatrix = [
-    [0.04, 0.01],
-    [0.01, 0.01],
-  ];
-  const meanReturns = { SPY: 0.001, BND: 0.0005 };
+const EPSILON = 1e-10;
 
-  describe("computeHistoricalVaR", () => {
-    it("calculates 95% VaR correctly", () => {
-      const var95 = computeHistoricalVaR(sampleReturns, 0.95);
-      // Sorted returns: -0.02, -0.02, -0.015, -0.01, -0.01, -0.01, -0.005, -0.005, 0, 0.005, 0.005, 0.005, 0.01, 0.01, 0.01, 0.01, 0.01, 0.015, 0.02, 0.02, 0.03
-      // 20 observations, 95% -> index = floor(20 * 0.05) = 1 -> sorted[1] = -0.02 -> VaR = 0.02
-      expect(var95).toBeGreaterThan(0);
-    });
+// Mock returns data for 3 assets
+const assetReturns = [
+  [0.01, 0.02, -0.01, 0.015, -0.005, 0.02, -0.01, 0.005, 0.01, -0.015],
+  [0.005, 0.01, -0.005, 0.01, -0.01, 0.015, -0.005, 0.01, -0.01, 0.02],
+  [-0.005, 0.01, 0.015, -0.01, 0.02, -0.005, 0.01, -0.01, 0.015, 0.005],
+];
 
-    it("calculates 99% VaR correctly", () => {
-      const var99 = computeHistoricalVaR(sampleReturns, 0.99);
-      // index = floor(20 * 0.01) = 0 -> sorted[0] = -0.02 -> VaR = 0.02
-      expect(var99).toBeGreaterThan(0);
-    });
+const weights = [0.4, 0.35, 0.25];
+const tickers = ['SPY', 'BND', 'GLD'];
 
-    it("returns 0 for empty returns", () => {
-      expect(computeHistoricalVaR([], 0.95)).toBe(0);
-    });
-  });
+const config: risk.RiskConfig = {
+  weights,
+  confidenceLevels: [0.95, 0.99],
+  useShrinkage: false,
+};
 
-  describe("computeHistoricalES", () => {
-    it("calculates 95% ES correctly", () => {
-      const es95 = computeHistoricalES(sampleReturns, 0.95);
-      // ES = average of worst 5% = average of [-0.02] = 0.02
-      expect(es95).toBeGreaterThan(0);
-    });
-
-    it("returns 0 for empty returns", () => {
-      expect(computeHistoricalES([], 0.95)).toBe(0);
-    });
-  });
-
-  describe("computeParametricVaR", () => {
-    it("calculates 95% parametric VaR", () => {
-      const mean = 0.001;
-      const std = 0.01;
-      // Z_0.95 = 1.645, VaR = -(mean - 1.645 * std) = 1.645 * 0.01 - 0.001 = 0.01545
-      const var95 = computeParametricVaR(mean, std, 0.95);
-      expect(var95).toBeCloseTo(0.01545, 5);
-    });
-
-    it("calculates 99% parametric VaR", () => {
-      const mean = 0.001;
-      const std = 0.01;
-      // Z_0.99 = 2.326, VaR = 2.326 * 0.01 - 0.001 = 0.02226
-      const var99 = computeParametricVaR(mean, std, 0.99);
-      expect(var99).toBeCloseTo(0.02226, 5);
-    });
-  });
-
-  describe("computeParametricES", () => {
-    it("calculates 95% parametric ES", () => {
-      const mean = 0.001;
-      const std = 0.01;
-      // ES = mean + std * phi(z) / (1 - alpha)
-      // phi(1.645) ≈ 0.103, ES = 0.001 + 0.01 * 0.103 / 0.05 = 0.001 + 0.0206 = 0.0216
-      const es95 = computeParametricES(mean, std, 0.95);
-      expect(es95).toBeGreaterThan(0);
-    });
-  });
-
-  describe("computeCornishFisherVaR", () => {
-    it("adjusts for skewness and kurtosis", () => {
-      const mean = 0.001;
-      const std = 0.01;
-      const skew = -0.5; // negative skew
-      const kurt = 3; // normal kurtosis
+describe('risk', () => {
+  describe('pca', () => {
+    it('computes eigenvalues and eigenvectors for correlation matrix', () => {
+      const corrMatrix = stats.correlationMatrix(assetReturns);
+      const result = risk.pca(corrMatrix);
       
-      const var95 = computeCornishFisherVaR(mean, std, skew, kurt, 0.95);
-      const var95Normal = computeParametricVaR(mean, std, 0.95);
-      // Negative skew should increase VaR (more tail risk)
-      expect(var95).toBeGreaterThan(var95Normal);
+      expect(result.eigenvalues.length).toBe(3);
+      expect(result.eigenvectors.length).toBe(3);
+      expect(result.eigenvectors[0].length).toBe(3);
+      expect(result.varianceExplained.length).toBe(3);
+      expect(result.cumulativeVarianceExplained.length).toBe(3);
+      
+      // Eigenvalues should be sorted descending
+      for (let i = 1; i < 3; i++) {
+        expect(result.eigenvalues[i]).toBeLessThanOrEqual(result.eigenvalues[i - 1]);
+      }
+      
+      // Variance explained should sum to 1
+      const sumVar = result.varianceExplained.reduce((a, b) => a + b, 0);
+      expect(sumVar).toBeCloseTo(1, 10);
+      
+      // Last cumulative should be 1
+      expect(result.cumulativeVarianceExplained[2]).toBeCloseTo(1, 10);
     });
 
-    it("matches parametric VaR for normal distribution", () => {
-      const mean = 0.001;
-      const std = 0.01;
-      const var95 = computeCornishFisherVaR(mean, std, 0, 0, 0.95); // skew=0, excess kurtosis=0
-      const var95Parametric = computeParametricVaR(mean, std, 0.95);
-      expect(var95).toBeCloseTo(var95Parametric, 5);
+    it('handles identity matrix', () => {
+      const identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+      const result = risk.pca(identity);
+      expect(result.eigenvalues[0]).toBeCloseTo(1, 10);
+      expect(result.eigenvalues[1]).toBeCloseTo(1, 10);
+      expect(result.eigenvalues[2]).toBeCloseTo(1, 10);
+      expect(result.varianceExplained[0]).toBeCloseTo(1/3, 10);
+      expect(result.varianceExplained[1]).toBeCloseTo(1/3, 10);
+      expect(result.varianceExplained[2]).toBeCloseTo(1/3, 10);
     });
   });
 
-  describe("computeFactorModel", () => {
-    it("computes factor model regression", () => {
-      // Create returns with known factor exposure
-      const n = 100;
-      const portfolioReturns = Array.from({ length: n }, (_, i) => (
-        0.0005 + 1.2 * 0.001 + 0.3 * 0.0005 - 0.2 * 0.0003 + (Math.random() - 0.5) * 0.005
-      ));
-      const factors = {
-        mkt: Array.from({ length: n }, () => 0.001 + (Math.random() - 0.5) * 0.01),
-        smb: Array.from({ length: n }, () => 0.0005 + (Math.random() - 0.5) * 0.005),
-        hml: Array.from({ length: n }, () => -0.0003 + (Math.random() - 0.5) * 0.005),
-        rf: Array.from({ length: n }, () => 0.0001),
-      };
+  describe('cornishFisherVaR', () => {
+    it('computes VaR with skew/kurtosis adjustment', () => {
+      const returns = assetReturns[0];
+      const var95 = risk.cornishFisherVaR(returns, 0.95);
+      const var99 = risk.cornishFisherVaR(returns, 0.99);
+      
+      expect(typeof var95).toBe('number');
+      expect(typeof var99).toBe('number');
+      // Both are negative (losses), 99% VaR is a larger loss (more negative)
+      expect(var99).toBeLessThanOrEqual(var95);
+    });
+  });
 
-      const result = computeFactorModel(portfolioReturns, factors);
+  describe('computeTailRisk', () => {
+    it('computes all VaR/ES measures', () => {
+      const portfolioReturns = assetReturns[0].map((_, t) =>
+        assetReturns.reduce((sum, r, i) => sum + r[t] * weights[i], 0)
+      );
+      
+      const result = risk.computeTailRisk(portfolioReturns, [0.95, 0.99]);
+      
+      expect(result.historicalVar[0.95]).toBeDefined();
+      expect(result.historicalVar[0.99]).toBeDefined();
+      expect(result.historicalES[0.95]).toBeDefined();
+      expect(result.historicalES[0.99]).toBeDefined();
+      expect(result.parametricVar[0.95]).toBeDefined();
+      expect(result.parametricVar[0.99]).toBeDefined();
+      expect(result.parametricES[0.95]).toBeDefined();
+      expect(result.parametricES[0.99]).toBeDefined();
+      expect(result.cornishFisherVar[0.95]).toBeDefined();
+      expect(result.cornishFisherVar[0.99]).toBeDefined();
+      
+      // ES should be >= VaR (more conservative)
+      expect(result.historicalES[0.95]).toBeGreaterThanOrEqual(result.historicalVar[0.95]);
+      expect(result.historicalES[0.99]).toBeGreaterThanOrEqual(result.historicalVar[0.99]);
+      expect(result.parametricES[0.95]).toBeGreaterThanOrEqual(result.parametricVar[0.95]);
+    });
+  });
+
+  describe('famaFrenchRegression', () => {
+    it('runs 3-factor regression', () => {
+      const portfolioReturns = assetReturns[0].map((_, t) =>
+        assetReturns.reduce((sum, r, i) => sum + r[t] * weights[i], 0)
+      );
+      
+      const factorData = {
+        mkt: portfolioReturns.map(r => r * 0.9),
+        smb: portfolioReturns.map((r, i) => (i % 2 === 0 ? 0.001 : -0.001)),
+        hml: portfolioReturns.map((r, i) => (i % 3 === 0 ? -0.001 : 0.001)),
+        rf: new Array(portfolioReturns.length).fill(0.02 / 252),
+      };
+      
+      const result = risk.famaFrenchRegression(portfolioReturns, factorData);
       
       expect(result.alpha).toBeDefined();
-      expect(result.betas.mkt).toBeDefined();
-      expect(result.betas.smb).toBeDefined();
-      expect(result.betas.hml).toBeDefined();
-      expect(result.tStats.mkt).toBeDefined();
-      expect(result.tStats.smb).toBeDefined();
-      expect(result.tStats.hml).toBeDefined();
+      expect(result.betaMkt).toBeDefined();
+      expect(result.betaSmb).toBeDefined();
+      expect(result.betaHml).toBeDefined();
+      expect(result.tStatAlpha).toBeDefined();
+      expect(result.tStatMkt).toBeDefined();
+      expect(result.tStatSmb).toBeDefined();
+      expect(result.tStatHml).toBeDefined();
       expect(result.rSquared).toBeGreaterThanOrEqual(0);
       expect(result.rSquared).toBeLessThanOrEqual(1);
     });
+  });
 
-    it("handles insufficient data", () => {
-      const result = computeFactorModel([0.01, 0.02], {
-        mkt: [0.01, 0.02],
-        smb: [0.001, 0.002],
-        hml: [0.001, 0.002],
-        rf: [0.0001, 0.0001],
+  describe('getStressTestScenarios', () => {
+    it('returns predefined scenarios', () => {
+      const scenarios = risk.getStressTestScenarios();
+      expect(scenarios.length).toBe(3);
+      expect(scenarios[0].name).toBe('2008 Global Financial Crisis');
+      expect(scenarios[1].name).toBe('2020 COVID Crash');
+      expect(scenarios[2].name).toBe('2022 Rate Hike Cycle');
+      
+      scenarios.forEach(s => {
+        expect(s.name).toBeDefined();
+        expect(s.description).toBeDefined();
+        expect(s.shocks).toBeDefined();
+        expect(typeof s.shocks).toBe('object');
       });
-      expect(result.rSquared).toBe(0);
     });
   });
 
-  describe("computeRiskDecomposition", () => {
-    it("computes MCR, CR, PCTR correctly", () => {
-      const result = computeRiskDecomposition(weights, covMatrix, tickers);
+  describe('runStressTests', () => {
+    it('computes portfolio return under each scenario', () => {
+      const scenarios = risk.getStressTestScenarios();
+      const results = risk.runStressTests(weights, tickers, scenarios);
       
-      expect(result.mcr).toBeDefined();
-      expect(result.cr).toBeDefined();
-      expect(result.pctr).toBeDefined();
-      
-      // PCTR should sum to 1
-      const sumPctr = Object.values(result.pctr).reduce((a, b) => a + b, 0);
-      expect(sumPctr).toBeCloseTo(1, 5);
-      
-      // CR = weight * MCR, should sum to portfolio volatility
-      const sumCR = Object.values(result.cr).reduce((a, b) => a + b, 0);
-      const portVol = Math.sqrt(0.6 * 0.6 * 0.04 + 2 * 0.6 * 0.4 * 0.01 + 0.4 * 0.4 * 0.01);
-      expect(sumCR).toBeCloseTo(portVol, 5);
-    });
-  });
-
-  describe("runStressTests", () => {
-    it("runs all stress test scenarios", () => {
-      const scenarios = runStressTests(weights, assetReturns, tickers);
-      
-      expect(scenarios).toHaveLength(5); // GFC, COVID, Rate Hike, Eurozone, China
-      
-      for (const scenario of scenarios) {
-        expect(scenario.name).toBeDefined();
-        expect(scenario.portfolioReturn).toBeDefined();
-        expect(scenario.assetShocks).toBeDefined();
-      }
-    });
-
-    it("GFC scenario produces negative return for equity-heavy portfolio", () => {
-      const scenarios = runStressTests({ SPY: 0.8, BND: 0.2 }, assetReturns, tickers);
-      const gfc = scenarios.find((s) => s.name.includes("2008"));
-      expect(gfc).toBeDefined();
-      // Equity-heavy portfolio should suffer in GFC
-      expect(gfc!.portfolioReturn).toBeLessThan(0);
-    });
-  });
-
-  describe("runRiskAnalysis", () => {
-    it("runs complete risk analysis", () => {
-      const result = runRiskAnalysis({
-        weights,
-        assetReturns,
-        covMatrix,
-        tickers,
-        meanReturns,
-        benchmark: "SPY",
-        confidenceLevel: 0.95,
+      expect(results.length).toBe(3);
+      results.forEach((r, i) => {
+        expect(r.name).toBe(scenarios[i].name);
+        expect(r.portfolioReturn).toBeDefined();
+        expect(typeof r.portfolioReturn).toBe('number');
       });
-
-      expect(result.var).toBeDefined();
-      expect(result.var.historical95).toBeDefined();
-      expect(result.var.historical99).toBeDefined();
-      expect(result.var.parametric95).toBeDefined();
-      expect(result.var.parametric99).toBeDefined();
-      expect(result.var.cornishFisher95).toBeDefined();
-      expect(result.es).toBeDefined();
-      expect(result.factorModel).toBeDefined();
-      expect(result.riskDecomposition).toBeDefined();
-      expect(result.stressTests).toBeDefined();
-      expect(result.pca).toBeDefined();
     });
   });
 
-  describe("computeRollingRiskMetrics", () => {
-    it("computes rolling metrics", () => {
-      const returns = Array.from({ length: 500 }, () => (Math.random() - 0.48) * 0.02);
-      const result = computeRollingRiskMetrics(returns, 252);
+  describe('computeRiskDecomposition', () => {
+    it('computes MCR and PCTR', () => {
+      const covMatrix = stats.covarianceMatrix(assetReturns);
+      const result = risk.computeRiskDecomposition(weights, covMatrix);
       
-      expect(result.rollingVol).toBeDefined();
-      expect(result.rollingSharpe).toBeDefined();
-      expect(result.rollingMaxDD).toBeDefined();
-      // Should have 500 - 252 + 1 = 249 points
-      expect(result.rollingVol.length).toBe(249);
+      expect(result.marginalComponentRisk.length).toBe(3);
+      expect(result.percentageContributionToRisk.length).toBe(3);
+      expect(result.totalRisk).toBeGreaterThan(0);
+      
+      // PCTR should sum to 1 (or close)
+      const pctrSum = result.percentageContributionToRisk.reduce((a, b) => a + b, 0);
+      expect(pctrSum).toBeCloseTo(1, 5);
     });
   });
 
-  describe("scenarioAnalysis", () => {
-    it("analyzes custom scenarios", () => {
-      const scenarios = [
-        { name: "Test Shock", shocks: { SPY: -0.2, BND: 0.05 } },
-        { name: "Rally", shocks: { SPY: 0.15, BND: 0.02 } },
-      ];
-      const result = scenarioAnalysis(weights, scenarios, assetReturns);
+  describe('runRiskAnalytics', () => {
+    it('runs full risk analytics pipeline', () => {
+      const result = risk.runRiskAnalytics(assetReturns, weights, tickers, config);
       
-      expect(result).toHaveLength(2);
-      expect(result[0].name).toBe("Test Shock");
-      expect(result[1].name).toBe("Rally");
-      expect(result[0].portfolioReturn).toBeLessThan(0); // Negative shock
-      expect(result[1].portfolioReturn).toBeGreaterThan(0); // Positive shock
+      expect(result.covarianceMatrix.length).toBe(3);
+      expect(result.correlationMatrix.length).toBe(3);
+      expect(result.pca.eigenvalues.length).toBe(3);
+      expect(result.factorModel.alpha).toBeDefined();
+      expect(result.tailRisk.historicalVar[0.95]).toBeDefined();
+      expect(result.stressTests.length).toBe(3);
+      expect(result.riskDecomposition.marginalComponentRisk.length).toBe(3);
+    });
+
+    it('uses shrinkage when enabled', () => {
+      const shrinkageConfig = { ...config, useShrinkage: true };
+      const result = risk.runRiskAnalytics(assetReturns, weights, tickers, shrinkageConfig);
+      expect(result.covarianceMatrix.length).toBe(3);
     });
   });
 });

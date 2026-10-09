@@ -1,389 +1,320 @@
-/**
- * Historical backtest engine - pure TypeScript, zero dependencies
- * Aligns series, computes returns, applies weights, rebalances, outputs metrics
- */
+// lib/math/backtest.ts
+// Historical backtest engine - pure TypeScript, zero framework dependencies
 
 import {
+  logReturns,
+  portfolioReturn,
+  portfolioVolatility,
+  rebalanceWeights,
+  normalizeWeights,
+  covarianceMatrix,
   mean,
   std,
-  logReturns,
-  drawdownSeries,
-  maxDrawdown,
-  cagr,
   annualizeReturn,
   annualizeVolatility,
   sharpeRatio,
   sortinoRatio,
   calmarRatio,
-  covarianceMatrix,
-  multiplyMatrixVector,
-} from "./statistics";
-import { normalizeWeights, validateWeights, Trade, computeTurnover } from "./portfolio";
+  maxDrawdown,
+  drawdownSeries,
+  cagr,
+} from './portfolio';
 
-// Types
-export interface PriceSeries {
-  [date: string]: number; // adjusted close
+/**
+ * Price series data point
+ */
+export interface PricePoint {
+  date: string;
+  price: number;
 }
 
+type PriceSeries = PricePoint[];
+
+/**
+ * Aligned price data across assets
+ */
 export interface AlignedData {
   dates: string[];
-  prices: number[][]; // [asset][date]
-  tickers: string[];
+  prices: Record<string, number[]>;
+  returns: Record<string, number[]>;
 }
 
-export interface BacktestInput {
-  tickers: string[];
-  weights: Record<string, number>;
+/**
+ * Trade log entry
+ */
+export interface Trade {
+  date: string;
+  action: 'buy' | 'sell';
+  ticker: string;
+  shares: number;
+  price: number;
+  value: number;
+}
+
+/**
+ * Backtest configuration
+ */
+export interface BacktestConfig {
   startDate: string;
   endDate: string;
-  rebalanceFrequency: "monthly" | "quarterly" | "annually" | "none";
+  rebalanceFrequency: 'monthly' | 'quarterly' | 'annually' | 'none';
   initialCapital: number;
+  weights: Record<string, number>;
 }
 
+/**
+ * Backtest result
+ */
 export interface BacktestResult {
   equityCurve: number[];
-  dates: string[];
-  drawdown: number[];
-  periodReturns: { date: string; return: number }[];
+  drawdownSeries: number[];
+  portfolioReturns: number[];
+  rebalanceDates: string[];
   trades: Trade[];
-  metrics: BacktestMetrics;
-  seed: string;
+  metrics: {
+    cagr: number;
+    volatility: number;
+    sharpe: number;
+    sortino: number;
+    calmar: number;
+    maxDrawdown: number;
+    bestMonth: number;
+    worstMonth: number;
+    winRate: number;
+  };
+  periodReturns: number[][];
 }
 
-export interface BacktestMetrics {
-  cagr: number;
-  volatility: number;
-  sharpe: number;
-  sortino: number;
-  maxDrawdown: number;
-  calmar: number;
-  bestMonth: number;
-  worstMonth: number;
-  winRate: number;
-  totalReturn: number;
-  annualizedReturn: number;
-  annualizedVolatility: number;
-}
-
-export interface MonthlyReturn {
-  year: number;
-  month: number;
-  return: number;
-}
-
-// Align multiple price series to common dates (inner join)
-export function alignSeries(series: Record<string, PriceSeries>): AlignedData {
-  const tickers = Object.keys(series);
-  if (tickers.length === 0) return { dates: [], prices: [], tickers: [] };
-  
-  // Find common dates
-  const dateSets = tickers.map((t) => new Set(Object.keys(series[t])));
-  let commonDates = new Set(dateSets[0]);
-  for (const ds of dateSets.slice(1)) {
-    commonDates = new Set([...commonDates].filter((d) => ds.has(d)));
+/**
+ * Align price series to common date index (inner join)
+ */
+export function alignPrices(priceData: Record<string, PriceSeries>): AlignedData {
+  // Collect all dates
+  const dateSets = Object.values(priceData).map(series =>
+    new Set(series.map(p => p.date))
+  );
+  if (dateSets.length === 0) {
+    return { dates: [], prices: {}, returns: {} };
   }
-  
-  const dates = [...commonDates].sort();
-  
-  if (dates.length === 0) return { dates: [], prices: [], tickers: [] };
-  
-  const prices = tickers.map((t) => dates.map((d) => series[t][d]));
-  
-  return { dates, prices, tickers };
-}
 
-// Compute daily log returns from aligned prices
-export function computeDailyReturns(prices: number[][]): number[][] {
-  if (prices.length === 0) return [];
-  const nAssets = prices.length;
-  const nDays = prices[0].length;
-  
-  if (nDays <= 1) return Array.from({ length: nAssets }, () => []);
-  
-  const returns: number[][] = Array.from({ length: nAssets }, () => Array(nDays - 1).fill(0));
-  
-  for (let i = 0; i < nAssets; i++) {
-    for (let j = 1; j < nDays; j++) {
-      const prev = prices[i][j - 1];
-      const curr = prices[i][j];
-      if (prev > 0 && curr > 0) {
-        returns[i][j - 1] = Math.log(curr / prev);
-      }
-    }
+  // Find intersection of all dates
+  let commonDates = dateSets[0];
+  for (let i = 1; i < dateSets.length; i++) {
+    commonDates = new Set([...commonDates].filter(d => dateSets[i].has(d)));
   }
-  
-  return returns;
-}
 
-// Apply weights to asset returns to get portfolio returns
-export function applyWeights(
-  returns: number[][],
-  weights: Record<string, number>,
-  tickers: string[]
-): number[] {
-  if (returns.length === 0 || tickers.length === 0) return [];
-  const nDays = returns[0].length;
-  const portfolioReturns: number[] = Array(nDays).fill(0);
-  
-  for (let i = 0; i < tickers.length; i++) {
-    const weight = weights[tickers[i]] ?? 0;
-    for (let j = 0; j < nDays; j++) {
-      portfolioReturns[j] += weight * returns[i][j];
-    }
+  const sortedDates = [...commonDates].sort();
+
+  // Build aligned prices and returns
+  const prices: Record<string, number[]> = {};
+  const returns: Record<string, number[]> = {};
+
+  for (const [ticker, series] of Object.entries(priceData)) {
+    const priceMap = new Map(series.map(p => [p.date, p.price]));
+    const alignedPrices = sortedDates.map(d => priceMap.get(d) ?? 0);
+    prices[ticker] = alignedPrices;
+    returns[ticker] = logReturns(alignedPrices);
   }
-  
-  return portfolioReturns;
+
+  return { dates: sortedDates, prices, returns };
 }
 
-// Check if date is a rebalance boundary
+/**
+ * Check if a date is a rebalance boundary
+ */
 export function isRebalanceDate(
   date: string,
   prevDate: string | null,
-  frequency: "monthly" | "quarterly" | "annually" | "none"
+  frequency: 'monthly' | 'quarterly' | 'annually' | 'none'
 ): boolean {
-  if (frequency === "none") return false;
+  if (frequency === 'none') return false;
   if (!prevDate) return true;
-  
+
   const curr = new Date(date);
   const prev = new Date(prevDate);
-  
+
   switch (frequency) {
-    case "monthly":
+    case 'monthly':
       return curr.getMonth() !== prev.getMonth() || curr.getFullYear() !== prev.getFullYear();
-    case "quarterly":
+    case 'quarterly':
       return Math.floor(curr.getMonth() / 3) !== Math.floor(prev.getMonth() / 3) ||
         curr.getFullYear() !== prev.getFullYear();
-    case "annually":
+    case 'annually':
       return curr.getFullYear() !== prev.getFullYear();
     default:
       return false;
   }
 }
 
-// Rebalance portfolio at period boundaries
-export function rebalancePortfolio(
-  portfolioReturns: number[],
-  assetReturns: number[][],
-  weights: Record<string, number>,
-  tickers: string[],
-  dates: string[],
-  frequency: "monthly" | "quarterly" | "annually" | "none"
-): { equityCurve: number[]; trades: Trade[] } {
-  const nDays = portfolioReturns.length;
-  if (nDays === 0) return { equityCurve: [], trades: [] };
-  
-  const equityCurve: number[] = [1]; // Start with 1 (normalized)
-  const trades: Trade[] = [];
-  let currentWeights = { ...weights };
-  let prevDate: string | null = null;
-  
-  for (let i = 0; i < nDays; i++) {
-    const date = dates[i + 1]; // dates is one longer than returns
-    
-    // Check if we need to rebalance
-    if (isRebalanceDate(date, prevDate, frequency)) {
-      // Rebalance: compute trades to get back to target weights
-      const currentValue = equityCurve[equityCurve.length - 1];
-      
-      // Calculate current asset values
-      const assetValues: Record<string, number> = {};
-      for (let j = 0; j < tickers.length; j++) {
-        const ticker = tickers[j];
-        // Track asset value changes since last rebalance
-        // This is simplified - in reality we'd track individual asset equity
-        assetValues[ticker] = currentWeights[ticker] * currentValue;
-      }
-      
-      const { trades: rebalanceTrades, newWeights } = rebalanceWeights(
-        currentWeights,
-        weights,
-        // Use current prices (approximate)
-        Object.fromEntries(tickers.map((t, idx) => [t, 1])),
-        currentValue
-      );
-      
-      trades.push(...rebalanceTrades);
-      currentWeights = newWeights;
-    }
-    
-    // Apply portfolio return for this day
-    const dailyReturn = portfolioReturns[i];
-    const newEquity = equityCurve[equityCurve.length - 1] * (1 + dailyReturn);
-    equityCurve.push(newEquity);
-    
-    prevDate = date;
-  }
-  
-  return { equityCurve, trades };
-}
-
-// Compute all backtest metrics
-export function computeMetrics(
-  equityCurve: number[],
-  dates: string[],
-  riskFreeRate = 0.02
-): BacktestMetrics {
-  if (equityCurve.length < 2) {
-    return {
-      cagr: 0,
-      volatility: 0,
-      sharpe: 0,
-      sortino: 0,
-      maxDrawdown: 0,
-      calmar: 0,
-      bestMonth: 0,
-      worstMonth: 0,
-      winRate: 0,
-      totalReturn: 0,
-      annualizedReturn: 0,
-      annualizedVolatility: 0,
-    };
-  }
-  
-  const startValue = equityCurve[0];
-  const endValue = equityCurve[equityCurve.length - 1];
-  const totalReturn = (endValue - startValue) / startValue;
-  
-  // Daily returns from equity curve
-  const dailyReturns = equityCurve.slice(1).map((v, i) => (v - equityCurve[i]) / equityCurve[i]);
-  
-  const years = dailyReturns.length / 252;
-  const cagrValue = cagr(startValue, endValue, years);
-  
-  const dailyVol = std(dailyReturns, true);
-  const annualizedVol = annualizeVolatility(dailyVol, 252);
-  
-  const sharpe = sharpeRatio(dailyReturns, riskFreeRate, 252);
-  const sortino = sortinoRatio(dailyReturns, riskFreeRate, 252);
-  
-  const dd = drawdownSeries(equityCurve);
-  const maxDD = maxDrawdown(equityCurve);
-  
-  const calmar = calmarRatio(cagrValue, maxDD);
-  
-  // Monthly returns for best/worst month and win rate
-  const monthlyReturns = computeMonthlyReturns(equityCurve, dates);
-  const monthReturns = monthlyReturns.map((m) => m.return);
-  const bestMonth = monthReturns.length > 0 ? Math.max(...monthReturns) : 0;
-  const worstMonth = monthReturns.length > 0 ? Math.min(...monthReturns) : 0;
-  const winRate = monthReturns.length > 0 ? monthReturns.filter((r) => r > 0).length / monthReturns.length : 0;
-  
-  return {
-    cagr: cagrValue,
-    volatility: annualizedVol,
-    sharpe,
-    sortino,
-    maxDrawdown: maxDD,
-    calmar,
-    bestMonth,
-    worstMonth,
-    winRate,
-    totalReturn,
-    annualizedReturn: cagrValue,
-    annualizedVolatility: annualizedVol,
-  };
-}
-
-// Compute monthly returns for heatmap
-export function computeMonthlyReturns(
+/**
+ * Compute period returns (monthly)
+ */
+export function computePeriodReturns(
   equityCurve: number[],
   dates: string[]
-): MonthlyReturn[] {
-  if (equityCurve.length < 2 || dates.length < 2) return [];
-  
-  const monthlyMap = new Map<string, { start: number; end: number }>();
-  
-  for (let i = 0; i < equityCurve.length; i++) {
+): number[][] {
+  if (equityCurve.length !== dates.length || equityCurve.length < 2) {
+    return [];
+  }
+
+  const monthlyReturns: Record<string, number[]> = {};
+
+  for (let i = 1; i < equityCurve.length; i++) {
     const date = new Date(dates[i]);
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    
-    if (!monthlyMap.has(key)) {
-      monthlyMap.set(key, { start: equityCurve[i], end: equityCurve[i] });
-    } else {
-      const entry = monthlyMap.get(key)!;
-      entry.end = equityCurve[i];
-    }
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const ret = (equityCurve[i] - equityCurve[i - 1]) / equityCurve[i - 1];
+    if (!monthlyReturns[key]) monthlyReturns[key] = [];
+    monthlyReturns[key].push(ret);
   }
-  
-  const result: MonthlyReturn[] = [];
-  for (const [key, { start, end }] of monthlyMap) {
-    const [year, month] = key.split("-").map(Number);
-    if (start > 0) {
-      result.push({ year, month, return: (end - start) / start });
-    }
-  }
-  
-  return result.sort((a, b) => a.year - b.year || a.month - b.month);
+
+  // Convert to array of arrays (year x month)
+  const years = new Set(Object.keys(monthlyReturns).map(k => parseInt(k.split('-')[0])));
+  const sortedYears = [...years].sort((a, b) => a - b);
+
+  return sortedYears.map(year =>
+    Array.from({ length: 12 }, (_, m) => {
+      const key = `${year}-${String(m + 1).padStart(2, '0')}`;
+      const rets = monthlyReturns[key];
+      if (!rets || rets.length === 0) return 0;
+      // Compound returns within the month
+      return rets.reduce((acc, r) => acc * (1 + r), 1) - 1;
+    })
+  );
 }
 
-// Main backtest function
+/*** Run historical backtest
+ */
 export function runBacktest(
-  input: BacktestInput,
-  priceData: Record<string, PriceSeries>
+  priceData: Record<string, PriceSeries>,
+  config: BacktestConfig
 ): BacktestResult {
-  // Validate weights
-  const validation = validateWeights(input.weights);
-  if (!validation.valid) {
-    throw new Error(`Invalid weights: ${validation.errors.join(", ")}`);
+  // Align prices
+  const aligned = alignPrices(priceData);
+  const { dates, prices, returns } = aligned;
+
+  if (dates.length === 0) {
+    return {
+      equityCurve: [],
+      drawdownSeries: [],
+      portfolioReturns: [],
+      rebalanceDates: [],
+      trades: [],
+      metrics: {
+        cagr: 0,
+        volatility: 0,
+        sharpe: 0,
+        sortino: 0,
+        calmar: 0,
+        maxDrawdown: 0,
+        bestMonth: 0,
+        worstMonth: 0,
+        winRate: 0,
+      },
+      periodReturns: [],
+    };
   }
-  
-  // Normalize weights to sum to 1
-  const weights = normalizeWeights(input.weights);
-  
-  // Filter price data to date range and align
-  const filteredData: Record<string, PriceSeries> = {};
-  for (const ticker of input.tickers) {
-    if (priceData[ticker]) {
-      filteredData[ticker] = {};
-      for (const [date, price] of Object.entries(priceData[ticker])) {
-        if (date >= input.startDate && date <= input.endDate) {
-          filteredData[ticker][date] = price;
+
+  // Get tickers in consistent order
+  const tickers = Object.keys(prices);
+  const targetWeights = tickers.map(t => config.weights[t] ?? 0);
+  const normalizedWeights = normalizeWeights(targetWeights);
+
+  // Convert returns to matrix (assets x time)
+  const returnMatrix = tickers.map(t => returns[t]);
+
+  // Initial equity
+  let equity = config.initialCapital;
+  const equityCurve: number[] = [equity];
+  const portfolioReturns: number[] = [];
+  const trades: Trade[] = [];
+  const rebalanceDates: string[] = [];
+
+  // Current weights (start with target)
+  let currentWeights = [...normalizedWeights];
+
+  // Run through each day
+  for (let day = 1; day < dates.length; day++) {
+    const date = dates[day];
+    const prevDate = dates[day - 1];
+
+    // Check for rebalance
+    const shouldRebalance = isRebalanceDate(date, prevDate, config.rebalanceFrequency);
+
+    if (shouldRebalance) {
+      // Calculate current portfolio value per asset
+      const assetValues = tickers.map((t, i) => equity * currentWeights[i]);
+
+      // Rebalance to target weights
+      const newWeights = rebalanceWeights(currentWeights, normalizedWeights);
+
+      // Record trades
+      for (let i = 0; i < tickers.length; i++) {
+        const ticker = tickers[i];
+        const price = prices[ticker][day];
+        const targetValue = equity * newWeights[i];
+        const currentValue = assetValues[i];
+        const diff = targetValue - currentValue;
+
+        if (Math.abs(diff) > 0.01 && price > 0) {
+          const shares = diff / price;
+          trades.push({
+            date,
+            action: shares > 0 ? 'buy' : 'sell',
+            ticker,
+            shares: Math.abs(shares),
+            price,
+            value: Math.abs(diff),
+          });
         }
       }
+
+      currentWeights = newWeights;
+      rebalanceDates.push(date);
     }
+
+    // Compute daily portfolio return
+    const dailyReturns = tickers.map((t, i) => returns[t][day - 1] ?? 0);
+    let portfolioRet = 0;
+    for (let i = 0; i < tickers.length; i++) {
+      portfolioRet += dailyReturns[i] * currentWeights[i];
+    }
+
+    portfolioReturns.push(portfolioRet);
+    equity *= 1 + portfolioRet;
+    equityCurve.push(equity);
   }
-  
-  const aligned = alignSeries(filteredData);
-  
-  if (aligned.dates.length === 0) {
-    throw new Error("No common dates found in price data");
-  }
-  
-  // Compute daily returns
-  const assetReturns = computeDailyReturns(aligned.prices);
-  
-  // Apply weights to get portfolio returns
-  const portfolioReturns = applyWeights(assetReturns, weights, aligned.tickers);
-  
-  // Run rebalancing simulation
-  const { equityCurve, trades } = rebalancePortfolio(
-    portfolioReturns,
-    assetReturns,
-    weights,
-    aligned.tickers,
-    aligned.dates,
-    input.rebalanceFrequency
-  );
-  
-  // Scale equity curve by initial capital
-  const scaledEquity = equityCurve.map((v) => v * input.initialCapital);
-  
-  // Compute drawdown
-  const drawdown = drawdownSeries(scaledEquity);
-  
-  // Compute period returns
-  const periodReturns = computePeriodReturns(scaledEquity, aligned.dates);
-  
+
   // Compute metrics
-  const metrics = computeMetrics(scaledEquity, aligned.dates);
-  
+  const ddSeries = drawdownSeries(equityCurve);
+  const periodReturns = computePeriodReturns(equityCurve, dates);
+
+  // Monthly returns for best/worst month and win rate
+  const monthlyRets = periodReturns.flatMap(year =>
+    year.filter((m): m is number => m !== null)
+  );
+  const bestMonth = monthlyRets.length > 0 ? Math.max(...monthlyRets) : 0;
+  const worstMonth = monthlyRets.length > 0 ? Math.min(...monthlyRets) : 0;
+  const winRate = monthlyRets.length > 0
+    ? monthlyRets.filter(r => r > 0).length / monthlyRets.length
+    : 0;
+
   return {
-    equityCurve: scaledEquity,
-    dates: aligned.dates,
-    drawdown,
-    periodReturns,
+    equityCurve,
+    drawdownSeries: ddSeries,
+    portfolioReturns,
+    rebalanceDates,
     trades,
-    metrics,
-    seed: "deterministic", // Backtest is deterministic
+    metrics: {
+      cagr: cagr(equityCurve),
+      volatility: annualizeVolatility(std(portfolioReturns)),
+      sharpe: sharpeRatio(portfolioReturns),
+      sortino: sortinoRatio(portfolioReturns),
+      calmar: calmarRatio(equityCurve),
+      maxDrawdown: maxDrawdown(equityCurve),
+      bestMonth,
+      worstMonth,
+      winRate,
+    },
+    periodReturns,
   };
 }

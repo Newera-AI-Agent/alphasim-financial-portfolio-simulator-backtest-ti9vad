@@ -1,319 +1,335 @@
-/**
- * Statistical functions - pure TypeScript, zero dependencies
- * Mean, variance, std, skew, kurtosis, percentile, covariance, correlation
- * Matrix operations, eigenvalues, PCA
- */
+// lib/math/statistics.ts
+// Pure TypeScript statistical functions - zero framework dependencies
 
-export function mean(values: readonly number[]): number {
-  if (values.length === 0) return 0;
+export interface PriceSeries {
+  date: string;
+  price: number;
+}
+
+export interface ReturnSeries {
+  date: string;
+  return: number;
+}
+
+/**
+ * Compute simple returns from price series
+ * r_t = (p_t - p_{t-1}) / p_{t-1}
+ */
+export function simpleReturns(prices: number[]): number[] {
+  if (prices.length < 2) return [];
+  const returns: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    const prev = prices[i - 1];
+    const curr = prices[i];
+    if (prev === 0) {
+      returns.push(0);
+    } else {
+      returns.push((curr - prev) / prev);
+    }
+  }
+  return returns;
+}
+
+/**
+ * Compute log returns from price series
+ * r_t = ln(p_t / p_{t-1})
+ */
+export function logReturns(prices: number[]): number[] {
+  if (prices.length < 2) return [];
+  const returns: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    const prev = prices[i - 1];
+    const curr = prices[i];
+    if (prev <= 0 || curr <= 0) {
+      returns.push(0);
+    } else {
+      returns.push(Math.log(curr / prev));
+    }
+  }
+  return returns;
+}
+
+/**
+ * Compute mean of an array
+ */
+export function mean(values: number[]): number {
+  if (values.length === 0) return NaN;
   return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
-export function variance(values: readonly number[], sample = true): number {
+/**
+ * Compute sample standard deviation
+ */
+export function std(values: number[]): number {
+  if (values.length < 2) return 0;
+  const m = mean(values);
+  const variance = values.reduce((sum, v) => sum + (v - m) ** 2, 0) / (values.length - 1);
+  return Math.sqrt(variance);
+}
+
+/**
+ * Compute population standard deviation
+ */
+export function stdPop(values: number[]): number {
   if (values.length === 0) return 0;
-  if (values.length === 1) return 0;
   const m = mean(values);
-  const sumSq = values.reduce((sum, v) => sum + (v - m) ** 2, 0);
-  const divisor = sample ? values.length - 1 : values.length;
-  return sumSq / divisor;
+  const variance = values.reduce((sum, v) => sum + (v - m) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
 }
 
-export function std(values: readonly number[], sample = true): number {
-  if (values.length <= 1) return 0;
-  return Math.sqrt(variance(values, sample));
-}
-
-export function skew(values: readonly number[]): number {
-  if (values.length <= 2) return 0;
+/**
+ * Compute skewness
+ */
+export function skew(values: number[]): number {
+  if (values.length < 3) return 0;
   const m = mean(values);
-  const s = std(values, false);
+  const s = std(values);
   if (s === 0) return 0;
   const n = values.length;
-  const sumCubed = values.reduce((sum, v) => sum + ((v - m) / s) ** 3, 0);
-  // Sample skewness formula
-  return (n / ((n - 1) * (n - 2))) * sumCubed;
+  const sum = values.reduce((acc, v) => acc + ((v - m) / s) ** 3, 0);
+  return (n / ((n - 1) * (n - 2))) * sum;
 }
 
-export function kurtosis(values: readonly number[]): number {
-  if (values.length <= 3) return 0;
+/**
+ * Compute excess kurtosis
+ */
+export function kurtosis(values: number[]): number {
+  if (values.length < 4) return 0;
   const m = mean(values);
-  const s = std(values, false);
+  const s = std(values);
   if (s === 0) return 0;
   const n = values.length;
-  const sumFourth = values.reduce((sum, v) => sum + ((v - m) / s) ** 4, 0);
-  // Excess kurtosis (sample)
-  const term1 = (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3)) * sumFourth;
+  const sum = values.reduce((acc, v) => acc + ((v - m) / s) ** 4, 0);
+  const term1 = (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3)) * sum;
   const term2 = (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
   return term1 - term2;
 }
 
-export function percentile(values: readonly number[], p: number): number {
-  if (values.length === 0) return 0;
-  if (values.length === 1) return values[0];
+/**
+ * Compute percentile (0-1)
+ */
+export function percentile(values: number[], p: number): number {
+  if (values.length === 0) return NaN;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = p * (sorted.length - 1);
-  const lower = Math.floor(index);
-  const upper = Math.ceil(index);
+  const idx = p * (sorted.length - 1);
+  const lower = Math.floor(idx);
+  const upper = Math.ceil(idx);
   if (lower === upper) return sorted[lower];
-  const weight = index - lower;
+  const weight = idx - lower;
   return sorted[lower] * (1 - weight) + sorted[upper] * weight;
 }
 
-export function covariance(x: readonly number[], y: readonly number[], sample = true): number {
-  if (x.length !== y.length || x.length === 0) return 0;
-  if (x.length === 1) return 0;
-  const mx = mean(x);
-  const my = mean(y);
-  const sum = x.reduce((sum, xi, i) => sum + (xi - mx) * (y[i] - my), 0);
-  const divisor = sample ? x.length - 1 : x.length;
-  return sum / divisor;
-}
-
-export function correlation(x: readonly number[], y: readonly number[]): number {
-  if (x.length !== y.length || x.length <= 1) return 0;
-  const mx = mean(x);
-  const my = mean(y);
-  const sx = std(x, false);
-  const sy = std(y, false);
-  if (sx === 0 || sy === 0) return 0;
-  const cov = covariance(x, y, false);
-  return cov / (sx * sy);
-}
-
-export function covarianceMatrix(returns: number[][]): number[][] {
-  const nAssets = returns.length;
-  if (nAssets === 0) return [];
-  const nObs = returns[0].length;
-  
-  const means = returns.map((r) => mean(r));
-  const matrix: number[][] = Array.from({ length: nAssets }, () => Array(nAssets).fill(0));
-  
-  for (let i = 0; i < nAssets; i++) {
-    for (let j = i; j < nAssets; j++) {
-      let sum = 0;
-      for (let k = 0; k < nObs; k++) {
-        sum += (returns[i][k] - means[i]) * (returns[j][k] - means[j]);
-      }
-      const cov = sum / (nObs - 1); // sample covariance
-      matrix[i][j] = cov;
-      matrix[j][i] = cov;
-    }
+/**
+ * Compute autocorrelation at lag k
+ */
+export function autocorr(values: number[], lag: number): number {
+  if (lag >= values.length || lag < 0) return 0;
+  const m = mean(values);
+  let num = 0;
+  let den = 0;
+  for (let i = lag; i < values.length; i++) {
+    num += (values[i] - m) * (values[i - lag] - m);
   }
-  
-  return matrix;
+  for (let i = 0; i < values.length; i++) {
+    den += (values[i] - m) ** 2;
+  }
+  return den === 0 ? 0 : num / den;
 }
 
-export function correlationMatrix(returns: number[][]): number[][] {
-  const cov = covarianceMatrix(returns);
-  const n = cov.length;
-  const matrix: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
-  
+/**
+ * Compute covariance between two series (population)
+ */
+export function covariance(x: number[], y: number[]): number {
+  if (x.length !== y.length || x.length === 0) return NaN;
+  const mx = mean(x);
+  const my = mean(y);
+  let sum = 0;
+  for (let i = 0; i < x.length; i++) {
+    sum += (x[i] - mx) * (y[i] - my);
+  }
+  return sum / x.length;
+}
+
+/**
+ * Compute correlation between two series
+ */
+export function correlation(x: number[], y: number[]): number {
+  const sx = stdPop(x);
+  const sy = stdPop(y);
+  if (sx === 0 || sy === 0) return 0;
+  return covariance(x, y) / (sx * sy);
+}
+
+/**
+ * Compute covariance matrix from return series (assets x time)
+ */
+export function covarianceMatrix(returns: number[][]): number[][] {
+  const n = returns.length;
+  const matrix: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      if (i === j) {
-        matrix[i][j] = 1;
-      } else {
-        const denom = Math.sqrt(cov[i][i] * cov[j][j]);
-        matrix[i][j] = denom === 0 ? 0 : cov[i][j] / denom;
-      }
+      matrix[i][j] = covariance(returns[i], returns[j]);
     }
   }
-  
   return matrix;
 }
 
-export function shrinkage(returns: number[][]): number[][] {
-  const nAssets = returns.length;
-  if (nAssets === 0) return [];
-  const nObs = returns[0].length;
-  if (nObs <= 1) return covarianceMatrix(returns);
-  
-  const sampleCov = covarianceMatrix(returns);
-  
-  // Target: diagonal matrix with same variances
-  const target: number[][] = Array.from({ length: nAssets }, (_, i) =>
-    Array.from({ length: nAssets }, (_, j) => (i === j ? sampleCov[i][i] : 0))
-  );
-  
-  // Ledoit-Wolf shrinkage intensity
-  // Simplified: use average correlation as shrinkage target
-  let sumVarSq = 0;
-  let sumCovSq = 0;
-  
-  for (let i = 0; i < nAssets; i++) {
-    sumVarSq += sampleCov[i][i] ** 2;
-    for (let j = i + 1; j < nAssets; j++) {
-      sumCovSq += sampleCov[i][j] ** 2;
+/**
+ * Compute correlation matrix from return series
+ */
+export function correlationMatrix(returns: number[][]): number[][] {
+  const n = returns.length;
+  const matrix: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      let corr = correlation(returns[i], returns[j]);
+      // Clamp to [-1, 1] to handle floating point precision issues
+      corr = Math.max(-1, Math.min(1, corr));
+      matrix[i][j] = corr;
     }
   }
-  
-  // Shrinkage intensity (simplified)
-  const pi = (sumVarSq + 2 * sumCovSq) / (nObs * (sumVarSq + 2 * sumCovSq + 1e-12));
-  const intensity = Math.min(1, Math.max(0, pi));
-  
-  const shrunk: number[][] = Array.from({ length: nAssets }, (_, i) =>
-    Array.from({ length: nAssets }, (_, j) =>
-      intensity * target[i][j] + (1 - intensity) * sampleCov[i][j]
-    )
-  );
-  
+  return matrix;
+}
+
+/**
+ * Ledoit-Wolf shrinkage estimator for covariance matrix
+ * Shrinks sample covariance toward diagonal matrix with average variance
+ */
+export function ledoitWolfShrinkage(returns: number[][]): number[][] {
+  const n = returns.length; // number of assets
+  const t = returns[0]?.length ?? 0; // number of observations
+  if (n === 0 || t < 2) return [];
+
+  // Sample covariance matrix
+  const sampleCov = covarianceMatrix(returns);
+
+  // Average variance (target is diagonal with average variance)
+  let avgVar = 0;
+  for (let i = 0; i < n; i++) {
+    avgVar += sampleCov[i][i];
+  }
+  avgVar /= n;
+
+  // Target matrix (diagonal with average variance)
+  const target: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    target[i][i] = avgVar;
+  }
+
+  // Estimate optimal shrinkage intensity (simplified Ledoit-Wolf)
+  // For small samples, use a reasonable default
+  const shrinkage = Math.min(1, Math.max(0, 0.5 / Math.sqrt(t)));
+
+  // Shrink
+  const shrunk: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      shrunk[i][j] = shrinkage * target[i][j] + (1 - shrinkage) * sampleCov[i][j];
+    }
+  }
+
   return shrunk;
 }
 
-// Portfolio-specific functions
-export function logReturns(prices: number[]): number[] {
-  if (prices.length <= 1) return [];
-  return prices.slice(1).map((p, i) => Math.log(p / prices[i]));
-}
-
-export function simpleReturns(prices: number[]): number[] {
-  if (prices.length <= 1) return [];
-  return prices.slice(1).map((p, i) => p / prices[i] - 1);
-}
-
-export function drawdownSeries(equityCurve: number[]): number[] {
-  if (equityCurve.length === 0) return [];
+/**
+ * Compute drawdown series from equity curve
+ */
+export function drawdownSeries(equity: number[]): number[] {
+  if (equity.length === 0) return [];
   const dd: number[] = [];
-  let peak = equityCurve[0];
-  for (const value of equityCurve) {
-    if (value > peak) peak = value;
-    dd.push(peak === 0 ? 0 : (peak - value) / peak);
+  let peak = equity[0];
+  for (let i = 0; i < equity.length; i++) {
+    if (equity[i] > peak) peak = equity[i];
+    dd.push(peak === 0 ? 0 : (equity[i] - peak) / peak);
   }
   return dd;
 }
 
-export function maxDrawdown(equityCurve: number[]): number {
-  if (equityCurve.length === 0) return 0;
-  let peak = equityCurve[0];
-  let maxDD = 0;
-  for (const value of equityCurve) {
-    if (value > peak) peak = value;
-    const dd = peak === 0 ? 0 : (peak - value) / peak;
-    if (dd > maxDD) maxDD = dd;
-  }
-  return maxDD;
+/**
+ * Compute maximum drawdown from equity curve (negative value, zero or negative)
+ */
+export function maxDrawdown(equity: number[]): number {
+  const dd = drawdownSeries(equity);
+  return Math.min(0, ...dd);
 }
 
-export function cagr(start: number, end: number, years: number): number {
-  if (years <= 0) return 0;
-  if (start <= 0) return -1;
-  if (end <= 0) return -1;
+/**
+ * Compute CAGR (Compound Annual Growth Rate)
+ * Assumes daily returns, 252 trading days per year
+ * periodsPerYear: number of periods per year (e.g., 252 for daily)
+ * numPeriods: total number of periods in the equity curve (if not provided, uses equity.length - 1)
+ */
+export function cagr(equity: number[], periodsPerYear: number = 252, numPeriods?: number): number {
+  if (equity.length < 2) return 0;
+  const start = equity[0];
+  const end = equity[equity.length - 1];
+  if (start <= 0) return 0;
+  const periods = numPeriods ?? (equity.length - 1);
+  const years = periods / periodsPerYear;
+  if (years === 0) return 0;
   return Math.pow(end / start, 1 / years) - 1;
 }
 
-export function annualizeReturn(dailyReturn: number, periodsPerYear: number): number {
-  if (periodsPerYear <= 0) return 0;
-  return dailyReturn * periodsPerYear;
+/**
+ * Annualize return
+ */
+export function annualizeReturn(returnValue: number, periodsPerYear: number = 252): number {
+  return Math.pow(1 + returnValue, periodsPerYear) - 1;
 }
 
-export function annualizeVolatility(dailyVol: number, periodsPerYear: number): number {
-  if (periodsPerYear <= 0) return 0;
-  return dailyVol * Math.sqrt(periodsPerYear);
+/**
+ * Annualize volatility
+ */
+export function annualizeVolatility(volatility: number, periodsPerYear: number = 252): number {
+  return volatility * Math.sqrt(periodsPerYear);
 }
 
-export function sharpeRatio(returns: readonly number[], riskFreeRate: number, periodsPerYear: number): number {
-  if (returns.length === 0) return 0;
-  const excessReturns = returns.map((r) => r - riskFreeRate / periodsPerYear);
-  const meanExcess = mean(excessReturns);
-  const stdExcess = std(excessReturns, true);
-  if (stdExcess === 0) return 0;
-  return (meanExcess / stdExcess) * Math.sqrt(periodsPerYear);
+/**
+ * Compute Sharpe ratio
+ * (mean return - risk free rate) / std dev of returns
+ */
+export function sharpeRatio(
+  returns: number[],
+  riskFreeRate: number = 0,
+  periodsPerYear: number = 252
+): number {
+  if (returns.length < 2) return 0;
+  const m = mean(returns);
+  const s = std(returns);
+  if (s === 0) return 0;
+  const excessReturn = m - riskFreeRate / periodsPerYear;
+  return (excessReturn / s) * Math.sqrt(periodsPerYear);
 }
 
-export function sortinoRatio(returns: readonly number[], riskFreeRate: number, periodsPerYear: number): number {
-  if (returns.length === 0) return 0;
-  const excessReturns = returns.map((r) => r - riskFreeRate / periodsPerYear);
-  const meanExcess = mean(excessReturns);
-  const downsideReturns = excessReturns.filter((r) => r < 0);
-  if (downsideReturns.length === 0) return meanExcess > 0 ? Infinity : 0;
-  const downsideStd = std(downsideReturns, true);
-  if (downsideStd === 0) return 0;
-  return (meanExcess / downsideStd) * Math.sqrt(periodsPerYear);
+/**
+ * Compute Sortino ratio
+ * (mean return - risk free rate) / downside deviation
+ */
+export function sortinoRatio(
+  returns: number[],
+  riskFreeRate: number = 0,
+  periodsPerYear: number = 252
+): number {
+  if (returns.length < 2) return 0;
+  const m = mean(returns);
+  const targetReturn = riskFreeRate / periodsPerYear;
+  const downsideReturns = returns.filter(r => r < targetReturn);
+  if (downsideReturns.length === 0) return 0;
+  const downsideDev = Math.sqrt(
+    downsideReturns.reduce((sum, r) => sum + (r - targetReturn) ** 2, 0) / returns.length
+  );
+  if (downsideDev === 0) return 0;
+  const excessReturn = m - targetReturn;
+  return (excessReturn / downsideDev) * Math.sqrt(periodsPerYear);
 }
 
-export function calmarRatio(cagr: number, maxDrawdown: number): number {
-  if (maxDrawdown === 0) return cagr > 0 ? Infinity : 0;
-  return cagr / maxDrawdown;
-}
-
-// Matrix operations
-export function multiplyMatrixVector(matrix: number[][], vector: number[]): number[] {
-  return matrix.map((row) => row.reduce((sum, val, i) => sum + val * vector[i], 0));
-}
-
-export function multiplyMatrices(a: number[][], b: number[][]): number[][] {
-  const rowsA = a.length;
-  const colsA = a[0].length;
-  const colsB = b[0].length;
-  const result: number[][] = Array.from({ length: rowsA }, () => Array(colsB).fill(0));
-  for (let i = 0; i < rowsA; i++) {
-    for (let j = 0; j < colsB; j++) {
-      let sum = 0;
-      for (let k = 0; k < colsA; k++) {
-        sum += a[i][k] * b[k][j];
-      }
-      result[i][j] = sum;
-    }
-  }
-  return result;
-}
-
-export function transpose(matrix: number[][]): number[][] {
-  if (matrix.length === 0) return [];
-  return matrix[0].map((_, i) => matrix.map((row) => row[i]));
-}
-
-export function choleskyDecomposition(matrix: number[][]): number[][] {
-  const n = matrix.length;
-  if (n === 0) return [];
-  
-  const L: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
-  
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j <= i; j++) {
-      let sum = 0;
-      for (let k = 0; k < j; k++) {
-        sum += L[i][k] * L[j][k];
-      }
-      if (i === j) {
-        const val = matrix[i][i] - sum;
-        if (val <= 0) {
-          throw new Error("Matrix is not positive definite");
-        }
-        L[i][j] = Math.sqrt(val);
-      } else {
-        L[i][j] = (matrix[i][j] - sum) / L[j][j];
-      }
-    }
-  }
-  
-  return L;
-}
-
-export function eigenvalues(matrix: number[][]): number[] {
-  // Only implemented for 2x2 matrices
-  if (matrix.length !== 2 || matrix[0].length !== 2) {
-    throw new Error("eigenvalues only implemented for 2x2 matrices");
-  }
-  const a = matrix[0][0];
-  const b = matrix[0][1];
-  const c = matrix[1][0];
-  const d = matrix[1][1];
-  
-  const trace = a + d;
-  const det = a * d - b * c;
-  const discriminant = trace * trace - 4 * det;
-  
-  if (discriminant < 0) return [];
-  
-  const sqrtDisc = Math.sqrt(discriminant);
-  return [(trace + sqrtDisc) / 2, (trace - sqrtDisc) / 2];
-}
-
-export function pcaVarianceExplained(covMatrix: number[][]): number[] {
-  const eigenvals = eigenvalues(covMatrix);
-  if (eigenvals.length === 0) return [];
-  const total = eigenvals.reduce((a, b) => a + b, 0);
-  if (total === 0) return eigenvals.map(() => 0);
-  return eigenvals.map((v) => v / total).sort((a, b) => b - a);
+/**
+ * Compute Calmar ratio
+ * CAGR / |Max Drawdown|
+ */
+export function calmarRatio(equity: number[], periodsPerYear: number = 252): number {
+  const cagrValue = cagr(equity, periodsPerYear);
+  const md = maxDrawdown(equity);
+  if (md === 0) return 0;
+  return cagrValue / Math.abs(md);
 }

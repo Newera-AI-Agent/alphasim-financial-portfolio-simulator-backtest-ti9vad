@@ -7,3 +7,37 @@ Durable session memory for this VM job chain. Each line is one step or wind-down
 - [2026-10-09T16:41:32.309Z | VM 1/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -150
 - [2026-10-09T17:01:13.761Z | VM 1/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -100
 - [2026-10-09T17:37:44.090Z | VM 1/3] RELAY checkpoint at step 89 — handoff committed, VM 2 continues.
+- [2026-10-09T17:38:02.034Z | VM 2/3] boot: VM 2/3 online (job vm-mv190gd0-cfmuw5vg, 180 min budget, relay continuation)
+- [2026-10-09T17:38:02.034Z | VM 2/3] self-check PASS: shell: VERIFIED (the harness executed bash on this VM at boot); node: v24.21.0; npm: 11.19.0; python3: Python 3.12.3; git: repo checked out @ 4f53886; filesystem: WRITABLE (the harness wrote + read back a probe file); skills: 23 knowledge docs in .newera/skills/ (list_skills / read_skill); project: 
+- [2026-10-09T17:38:14.693Z | VM 2/3] boot auto-setup: npm install --no-audit --no-fund ok
+- [2026-10-09T17:41:12.314Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -200
+- [2026-10-09T17:41:34.268Z | VM 2/3] VERIFIED green: npm run build 2>&1 | head -100
+- [2026-10-09T17:57:14.568Z | VM 2/3] PLAN updated: 10 steps
+- [2026-10-09T18:06:15.551Z | VM 2/3] VERIFIED green: npm run build 2>&1 | head -200
+- [2026-10-09T18:10:18.063Z | VM 2/3] VERIFIED green: npm run build 2>&1 | head -100
+- [2026-10-09T18:35:04.851Z | VM 2/3] VERIFIED green: npm run build 2>&1 | head -100
+- [2026-10-09T18:37:05.882Z | VM 2/3] VERIFIED green: npm run build 2>&1 | head -100
+- [2026-10-09T18:38:00.226Z | VM 2/3] VERIFIED green: npm run build 2>&1
+- [2026-10-09T18:41:50.050Z | VM 2/3] VERIFIED green: npm run test 2>&1 | head -80
+- [2026-10-09T18:45:15.682Z | VM 2/3] VERIFIED green: npm run test 2>&1 | head -60
+- [2026-10-09T18:45:49.037Z | VM 2/3] VERIFIED green: npm run test 2>&1 | head -60
+- [2026-10-09T18:55:47.186Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -200
+- [2026-10-09T18:55:57.788Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | tail -100
+- [2026-10-09T19:00:30.317Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -200
+- [2026-10-09T19:03:37.153Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | tail -100
+- [2026-10-09T19:18:40.057Z | VM 2/3] VERIFIED green: npm run test 2>&1 | head -100
+- [2026-10-09T19:18:45.675Z | VM 2/3] VERIFIED green: npm run test 2>&1 | tail -50
+- [2026-10-09T19:24:42.744Z | VM 2/3] VERIFIED green: npm run typecheck 2>&1
+- [2026-10-09T19:30:05.458Z | VM 2/3] VERIFIED green: npm run test 2>&1 | head -100
+- [2026-10-09T19:45:50.001Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | grep -A 30 'computeFanChart'
+- [2026-10-09T19:48:20.659Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -50
+- [2026-10-09T19:51:42.652Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | head -80
+- [2026-10-09T19:57:13.185Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | tail -50
+- [2026-10-09T19:59:07.306Z | VM 2/3] VERIFIED green: npx vitest run lib/math/__tests__/monte-carlo.test.ts --reporter=verbose 2>&1 | grep -A 30 'runs parametric simulation'
+- [2026-10-09T19:59:44.774Z | VM 2/3] VERIFIED green: npx vitest run -c vitest.config.ts --reporter=verbose 2>&1 | head -100
+- [2026-10-09T19:59:53.160Z | VM 2/3] VERIFIED green: cat package.json | grep -A 20 vitest
+- [2026-10-09T19:59:58.425Z | VM 2/3] VERIFIED green: ls -la vitest.config.* 2>/dev/null; ls -la *.config.* 2>/dev/null
+- [2026-10-09T20:03:08.759Z | VM 2/3] VERIFIED green: npm run test -- --reporter=verbose 2>&1 | tail -50
+- [2026-10-09T20:03:16.559Z | VM 2/3] VERIFIED green: npm run typecheck 2>&1
+- [2026-10-09T20:03:34.154Z | VM 2/3] VERIFIED green: npm run build 2>&1
+- [2026-10-09T20:24:32.124Z | VM 2/3] RELAY checkpoint at step 317 — handoff committed, VM 3 continues.

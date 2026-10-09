@@ -1,204 +1,155 @@
-/**
- * Portfolio math functions - pure TypeScript, zero dependencies
- * Portfolio return, volatility, Sharpe, Sortino, max DD, CAGR, rebalancing
- */
+// lib/math/portfolio.ts
+// Portfolio math functions - pure TypeScript, zero framework dependencies
 
 import {
   mean,
   std,
-  sharpeRatio as statsSharpeRatio,
-  sortinoRatio as statsSortinoRatio,
-  maxDrawdown as statsMaxDrawdown,
-  cagr as statsCagr,
+  covariance,
+  correlation,
+  covarianceMatrix,
+  correlationMatrix,
   logReturns,
-} from "./statistics";
+  simpleReturns,
+  drawdownSeries,
+  maxDrawdown,
+  cagr,
+  annualizeReturn,
+  annualizeVolatility,
+  sharpeRatio,
+  sortinoRatio,
+  calmarRatio,
+} from './statistics';
 
-export interface PortfolioAsset {
+export interface AssetAllocation {
   ticker: string;
   weight: number;
   expectedReturn?: number;
   volatility?: number;
 }
 
-export interface Weights {
-  [ticker: string]: number;
+export interface PortfolioMetrics {
+  expectedReturn: number;
+  volatility: number;
+  sharpeRatio: number;
+  sortinoRatio: number;
+  calmarRatio: number;
+  maxDrawdown: number;
 }
 
-export function portfolioReturn(weights: Weights, returns: Weights): number {
-  let sum = 0;
-  for (const [ticker, weight] of Object.entries(weights)) {
-    sum += weight * (returns[ticker] ?? 0);
+/**
+ * Compute portfolio return from asset returns and weights
+ */
+export function portfolioReturn(
+  assetReturns: number[][],
+  weights: number[]
+): number[] {
+  if (assetReturns.length === 0 || weights.length === 0) return [];
+  const nAssets = assetReturns.length;
+  const nPeriods = assetReturns[0].length;
+  const result: number[] = new Array(nPeriods).fill(0);
+
+  for (let i = 0; i < nAssets; i++) {
+    const w = weights[i] ?? 0;
+    for (let t = 0; t < nPeriods; t++) {
+      result[t] += assetReturns[i][t] * w;
+    }
   }
-  return sum;
+  return result;
 }
 
-export function portfolioVolatility(weights: Weights, covMatrix: number[][], tickers: string[]): number {
-  if (tickers.length === 0) return 0;
-  const w = tickers.map((t) => weights[t] ?? 0);
+/**
+ * Compute portfolio volatility from covariance matrix and weights
+ */
+export function portfolioVolatility(
+  covMatrix: number[][],
+  weights: number[]
+): number {
+  if (weights.length === 0) return 0;
   let variance = 0;
-  for (let i = 0; i < tickers.length; i++) {
-    for (let j = 0; j < tickers.length; j++) {
-      variance += w[i] * w[j] * covMatrix[i][j];
+  for (let i = 0; i < weights.length; i++) {
+    for (let j = 0; j < weights.length; j++) {
+      variance += weights[i] * weights[j] * (covMatrix[i][j] ?? 0);
     }
   }
   return Math.sqrt(Math.max(0, variance));
 }
 
-export function portfolioSharpe(
-  weights: Weights,
-  returns: Weights,
-  riskFreeRate: number,
-  periodsPerYear: number
-): number {
-  // For a single period, we need historical returns to compute Sharpe
-  // This is a simplified version - in practice you'd use time series
-  const portReturn = portfolioReturn(weights, returns);
-  const excessReturn = portReturn - riskFreeRate / periodsPerYear;
-  // Without volatility, we can't compute true Sharpe
-  // This is a placeholder that would need historical return series
-  return excessReturn > 0 ? 1 : 0;
+/*** Compute portfolio metrics from returns
+ */
+export function computePortfolioMetrics(
+  returns: number[],
+  riskFreeRate: number = 0,
+  periodsPerYear: number = 252
+): PortfolioMetrics {
+  const m = mean(returns);
+  const s = std(returns);
+  const equity = returns.reduce(
+    (acc, r) => [...acc, acc[acc.length - 1] * (1 + r)],
+    [1]
+  );
+
+  return {
+    expectedReturn: annualizeReturn(m, periodsPerYear),
+    volatility: annualizeVolatility(s, periodsPerYear),
+    sharpeRatio: sharpeRatio(returns, riskFreeRate, periodsPerYear),
+    sortinoRatio: sortinoRatio(returns, riskFreeRate, periodsPerYear),
+    calmarRatio: calmarRatio(equity, periodsPerYear),
+    maxDrawdown: maxDrawdown(equity),
+  };
 }
 
-export function portfolioSortino(
-  weights: Weights,
-  returns: Weights,
-  riskFreeRate: number,
-  periodsPerYear: number
-): number {
-  const portReturn = portfolioReturn(weights, returns);
-  const excessReturn = portReturn - riskFreeRate / periodsPerYear;
-  // Simplified - needs downside deviation from time series
-  return excessReturn > 0 ? 1 : 0;
-}
-
-export function portfolioMaxDrawdown(equityCurve: number[]): number {
-  return statsMaxDrawdown(equityCurve);
-}
-
-export function portfolioCAGR(startValue: number, endValue: number, years: number): number {
-  return statsCagr(startValue, endValue, years);
-}
-
+/*** Rebalance weights to target (proportional redistribution)
+ */
 export function rebalanceWeights(
-  currentWeights: Weights,
-  targetWeights: Weights,
-  prices: Weights,
-  totalValue: number
-): { trades: Trade[]; newWeights: Weights } {
-  const trades: Trade[] = [];
-  const newWeights: Weights = { ...targetWeights };
-  
-  const allTickers = new Set([...Object.keys(currentWeights), ...Object.keys(targetWeights)]);
-  
-  for (const ticker of allTickers) {
-    const currentWeight = currentWeights[ticker] ?? 0;
-    const targetWeight = targetWeights[ticker] ?? 0;
-    const price = prices[ticker] ?? 0;
-    
-    if (price === 0) continue;
-    
-    const currentValue = currentWeight * totalValue;
-    const targetValue = targetWeight * totalValue;
-    const diff = targetValue - currentValue;
-    
-    if (Math.abs(diff) > 0.01) { // Only trade if difference > 1 cent
-      const shares = diff / price;
-      trades.push({
-        ticker,
-        shares,
-        price,
-        value: diff,
-        side: diff > 0 ? "buy" : "sell",
-      });
-    }
-  }
-  
-  return { trades, newWeights };
+  currentWeights: number[],
+  targetWeights: number[]
+): number[] {
+  const sum = targetWeights.reduce((a, b) => a + b, 0);
+  if (sum === 0) return currentWeights;
+  return targetWeights.map(w => w / sum);
 }
 
-export interface Trade {
-  ticker: string;
-  shares: number;
-  price: number;
-  value: number;
-  side: "buy" | "sell";
+/*** Normalize weights to sum to 1
+ */
+export function normalizeWeights(weights: number[]): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (sum === 0) return weights;
+  return weights.map(w => w / sum);
 }
 
-export function normalizeWeights(weights: Weights): Weights {
-  const validWeights: Weights = {};
-  let sum = 0;
-  
-  for (const [ticker, weight] of Object.entries(weights)) {
-    if (weight > 0) {
-      validWeights[ticker] = weight;
-      sum += weight;
-    }
-  }
-  
-  if (sum === 0) {
-    return {};
-  }
-  
-  const normalized: Weights = {};
-  for (const [ticker, weight] of Object.entries(validWeights)) {
-    normalized[ticker] = weight / sum;
-  }
-  
-  return normalized;
-}
-
-export function validateWeights(weights: Weights): { valid: boolean; errors: string[] } {
+/*** Validate portfolio weights
+ */
+export function validateWeights(weights: number[]): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  
-  for (const [ticker, weight] of Object.entries(weights)) {
-    if (weight < 0) {
-      errors.push(`Negative weight for ${ticker}: ${weight}`);
-    }
+  if (weights.some(w => w < 0)) {
+    errors.push('Weights cannot be negative');
   }
-  
-  const sum = Object.values(weights).reduce((a, b) => a + b, 0);
-  if (sum > 1.0001) { // Allow small floating point errors
-    errors.push(`Weights sum to ${sum}, must be <= 1`);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (sum > 1.0001) {
+    errors.push('Weights sum cannot exceed 100%');
   }
-  
-  const assetCount = Object.keys(weights).filter((t) => weights[t] > 0).length;
-  if (assetCount < 2) {
-    errors.push(`Portfolio must have at least 2 assets, got ${assetCount}`);
+  if (weights.filter(w => w > 0).length < 2) {
+    errors.push('At least 2 assets required for simulation');
   }
-  
   return { valid: errors.length === 0, errors };
 }
 
-export function computeTurnover(trades: Trade[]): number {
-  if (!Array.isArray(trades) || trades.length === 0) return 0;
-  return trades.reduce((sum, trade) => sum + Math.abs(trade.value), 0);
-}
-
-export function computePeriodReturns(equityCurve: number[], dates: string[]): { date: string; return: number }[] {
-  if (equityCurve.length < 2 || dates.length < 2) return [];
-  
-  const result: { date: string; return: number }[] = [];
-  
-  for (let i = 1; i < equityCurve.length; i++) {
-    const prev = equityCurve[i - 1];
-    const curr = equityCurve[i];
-    if (prev > 0) {
-      result.push({ date: dates[i], return: (curr - prev) / prev });
-    }
-  }
-  
-  return result;
-}
-
-export function assetContribution(
-  weights: Weights,
-  assetReturns: Weights,
-  portfolioReturnValue: number
-): Weights {
-  const contribution: Weights = {};
-  for (const [ticker, weight] of Object.entries(weights)) {
-    const assetReturn = assetReturns[ticker] ?? 0;
-    contribution[ticker] = weight * assetReturn;
-  }
-  return contribution;
-}
+// Re-export statistics functions for convenience
+export {
+  mean,
+  std,
+  covariance,
+  correlation,
+  covarianceMatrix,
+  correlationMatrix,
+  logReturns,
+  simpleReturns,
+  drawdownSeries,
+  maxDrawdown,
+  cagr,
+  annualizeReturn,
+  annualizeVolatility,
+  sharpeRatio,
+  sortinoRatio,
+  calmarRatio,
+} from './statistics';
