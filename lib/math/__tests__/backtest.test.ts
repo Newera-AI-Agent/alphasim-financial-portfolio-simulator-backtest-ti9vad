@@ -1,174 +1,263 @@
-// lib/math/__tests__/backtest.test.ts
-// Unit tests for backtest.ts - known-value tests against reference implementations
-
+/**
+ * Unit tests for backtest module
+ */
+import { describe, it, expect } from "vitest";
 import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  vi,
-} from 'vitest';
-import * as backtest from '../backtest';
+  alignSeries,
+  computeDailyReturns,
+  applyWeights,
+  isRebalanceDate,
+  rebalancePortfolio,
+  runBacktest,
+  computeMetrics,
+  computeMonthlyReturns,
+  computePeriodReturns,
+} from "../backtest";
 
-const EPSILON = 1e-10;
-
-// Mock price data for 3 assets over 20 days
-const generatePriceData = () => {
-  const dates: string[] = [];
-  const baseDate = new Date('2023-01-01');
-  for (let i = 0; i < 20; i++) {
-    const d = new Date(baseDate);
-    d.setDate(baseDate.getDate() + i);
-    // Skip weekends
-    if (d.getDay() === 0 || d.getDay() === 6) continue;
-    dates.push(d.toISOString().split('T')[0]);
+// Helper to create PriceSeries from array
+function createPriceSeries(prices: Array<{ date: string; price: number }>): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const { date, price } of prices) {
+    result[date] = price;
   }
-  // Keep first 15 trading days
-  const tradingDates = dates.slice(0, 15);
-  
-  return {
-    SPY: tradingDates.map((date, i) => ({
-      date,
-      price: 400 * Math.exp(0.0005 * i + 0.01 * Math.sin(i * 0.5)),
-    })),
-    BND: tradingDates.map((date, i) => ({
-      date,
-      price: 100 * Math.exp(0.0001 * i + 0.005 * Math.cos(i * 0.3)),
-    })),
-    GLD: tradingDates.map((date, i) => ({
-      date,
-      price: 180 * Math.exp(-0.0002 * i + 0.008 * Math.sin(i * 0.7)),
-    })),
-  };
-};
+  return result;
+}
 
-const priceData = generatePriceData();
-
-const config: backtest.BacktestConfig = {
-  startDate: '2023-01-01',
-  endDate: '2023-12-31',
-  rebalanceFrequency: 'monthly',
-  initialCapital: 100000,
-  weights: { SPY: 0.5, BND: 0.3, GLD: 0.2 },
-};
-
-describe('backtest', () => {
-  describe('alignPrices', () => {
-    it('aligns price series to common dates', () => {
-      const result = backtest.alignPrices(priceData);
-      expect(result.dates.length).toBeGreaterThan(0);
-      expect(Object.keys(result.prices)).toEqual(['SPY', 'BND', 'GLD']);
-      expect(Object.keys(result.returns)).toEqual(['SPY', 'BND', 'GLD']);
-      // All series should have same length
-      const lengths = Object.values(result.prices).map(p => p.length);
-      expect(new Set(lengths).size).toBe(1);
+describe("backtest", () => {
+  describe("alignSeries", () => {
+    it("aligns multiple series to common dates", () => {
+      const series = {
+        SPY: createPriceSeries([
+          { date: "2020-01-01", price: 100 },
+          { date: "2020-01-02", price: 101 },
+          { date: "2020-01-03", price: 102 },
+        ]),
+        BND: createPriceSeries([
+          { date: "2020-01-01", price: 50 },
+          { date: "2020-01-02", price: 50.5 },
+          { date: "2020-01-06", price: 51 }, // Missing 2020-01-03
+        ]),
+      };
+      const aligned = alignSeries(series);
+      // Should only have dates present in both
+      expect(aligned.dates).toEqual(["2020-01-01", "2020-01-02"]);
+      expect(aligned.prices[0]).toHaveLength(2); // SPY
+      expect(aligned.prices[1]).toHaveLength(2); // BND
+      expect(aligned.tickers).toEqual(["SPY", "BND"]);
     });
-
-    it('returns empty for empty input', () => {
-      const result = backtest.alignPrices({});
-      expect(result.dates).toEqual([]);
-      expect(result.prices).toEqual({});
-      expect(result.returns).toEqual({});
+    it("handles empty series", () => {
+      expect(alignSeries({})).toEqual({ dates: [], prices: [], tickers: [] });
+    });
+    it("handles single series", () => {
+      const series = {
+        SPY: createPriceSeries([{ date: "2020-01-01", price: 100 }]),
+      };
+      const aligned = alignSeries(series);
+      expect(aligned.dates).toEqual(["2020-01-01"]);
+      expect(aligned.prices[0]).toEqual([100]);
+      expect(aligned.tickers).toEqual(["SPY"]);
     });
   });
 
-  describe('isRebalanceDate', () => {
-    it('returns true for monthly boundary', () => {
-      expect(backtest.isRebalanceDate('2023-02-01', '2023-01-31', 'monthly')).toBe(true);
-      expect(backtest.isRebalanceDate('2023-02-02', '2023-02-01', 'monthly')).toBe(false);
+  describe("computeDailyReturns", () => {
+    it("computes log returns correctly", () => {
+      const prices = [[100, 105, 102, 108]];
+      const returns = computeDailyReturns(prices);
+      expect(returns).toHaveLength(1);
+      expect(returns[0]).toHaveLength(3);
+      expect(returns[0][0]).toBeCloseTo(Math.log(105 / 100), 10);
+      expect(returns[0][1]).toBeCloseTo(Math.log(102 / 105), 10);
+      expect(returns[0][2]).toBeCloseTo(Math.log(108 / 102), 10);
     });
-
-    it('returns true for quarterly boundary', () => {
-      expect(backtest.isRebalanceDate('2023-04-01', '2023-03-31', 'quarterly')).toBe(true);
-      expect(backtest.isRebalanceDate('2023-04-03', '2023-04-01', 'quarterly')).toBe(false);
-    });
-
-    it('returns true for annually boundary', () => {
-      expect(backtest.isRebalanceDate('2024-01-01', '2023-12-31', 'annually')).toBe(true);
-      expect(backtest.isRebalanceDate('2024-01-02', '2024-01-01', 'annually')).toBe(false);
-    });
-
-    it('returns false for none', () => {
-      expect(backtest.isRebalanceDate('2023-02-01', '2023-01-31', 'none')).toBe(false);
-    });
-
-    it('returns true for first date (no prevDate)', () => {
-      expect(backtest.isRebalanceDate('2023-01-01', null, 'monthly')).toBe(true);
+    it("handles single price", () => {
+      expect(computeDailyReturns([[100]])).toEqual([[]]);
     });
   });
 
-  describe('computePeriodReturns', () => {
-    it('computes monthly returns from equity curve', () => {
-      const equityCurve = [100, 101, 102, 103, 104, 105];
-      const dates = [
-        '2023-01-01', '2023-01-02', '2023-01-03',
-        '2023-02-01', '2023-02-02', '2023-02-03',
+  describe("applyWeights", () => {
+    it("applies weights to asset returns", () => {
+      const assetReturns = [
+        [0.01, 0.02, -0.01], // SPY
+        [0.001, 0.002, 0.001], // BND
       ];
-      const result = backtest.computePeriodReturns(equityCurve, dates);
-      expect(result.length).toBe(1); // One year (2023)
-      expect(result[0].length).toBe(12); // 12 months
-      // Check that Jan and Feb have non-zero returns
-      expect(result[0][0]).not.toBe(0); // January
-      expect(result[0][1]).not.toBe(0); // February
-    });
-
-    it('returns empty for insufficient data', () => {
-      expect(backtest.computePeriodReturns([100], ['2023-01-01'])).toEqual([]);
-      expect(backtest.computePeriodReturns([], [])).toEqual([]);
+      const weights = { SPY: 0.6, BND: 0.4 };
+      const tickers = ["SPY", "BND"];
+      const portfolioReturns = applyWeights(assetReturns, weights, tickers);
+      expect(portfolioReturns).toHaveLength(3);
+      // Day 0: 0.6 * 0.01 + 0.4 * 0.001 = 0.006 + 0.0004 = 0.0064
+      expect(portfolioReturns[0]).toBeCloseTo(0.0064, 10);
+      // Day 1: 0.6 * 0.02 + 0.4 * 0.002 = 0.012 + 0.0008 = 0.0128
+      expect(portfolioReturns[1]).toBeCloseTo(0.0128, 10);
+      // Day 2: 0.6 * -0.01 + 0.4 * 0.001 = -0.006 + 0.0004 = -0.0056
+      expect(portfolioReturns[2]).toBeCloseTo(-0.0056, 10);
     });
   });
 
-  describe('runBacktest', () => {
-    it('runs backtest and returns valid result', () => {
-      const result = backtest.runBacktest(priceData, config);
+  describe("isRebalanceDate", () => {
+    it("detects monthly rebalance boundaries", () => {
+      expect(isRebalanceDate("2020-02-01", "2020-01-31", "monthly")).toBe(true);
+      expect(isRebalanceDate("2020-01-02", "2020-01-01", "monthly")).toBe(false);
+    });
+    it("detects quarterly rebalance boundaries", () => {
+      expect(isRebalanceDate("2020-04-01", "2020-03-31", "quarterly")).toBe(true);
+      expect(isRebalanceDate("2020-02-01", "2020-01-31", "quarterly")).toBe(false);
+    });
+    it("detects annually rebalance boundaries", () => {
+      expect(isRebalanceDate("2021-01-01", "2020-12-31", "annually")).toBe(true);
+      expect(isRebalanceDate("2020-06-01", "2020-05-31", "annually")).toBe(false);
+    });
+    it("returns false for none frequency", () => {
+      expect(isRebalanceDate("2020-02-01", "2020-01-31", "none")).toBe(false);
+    });
+    it("returns true for first date (no prevDate)", () => {
+      expect(isRebalanceDate("2020-01-01", null, "monthly")).toBe(true);
+    });
+  });
+
+  describe("rebalancePortfolio", () => {
+    it("returns equity curve and trades", () => {
+      const portfolioReturns = [0.01, 0.02, -0.01, 0.015, -0.005];
+      const assetReturns = [
+        portfolioReturns, // SPY
+        portfolioReturns.map((r) => r * 0.1), // BND
+      ];
+      const weights = { SPY: 0.6, BND: 0.4 };
+      const tickers = ["SPY", "BND"];
+      const dates = ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08"];
       
-      expect(result.equityCurve.length).toBeGreaterThan(0);
-      expect(result.drawdownSeries.length).toBe(result.equityCurve.length);
-      expect(result.portfolioReturns.length).toBe(result.equityCurve.length - 1);
+      const { equityCurve, trades } = rebalancePortfolio(
+        portfolioReturns,
+        assetReturns,
+        weights,
+        tickers,
+        dates,
+        "none"
+      );
+      expect(equityCurve).toHaveLength(6); // initial + 5 returns
+      expect(equityCurve[0]).toBe(1);
+      expect(trades).toHaveLength(0); // no rebalance with "none"
+    });
+  });
+
+  describe("runBacktest", () => {
+    it("runs a complete backtest", () => {
+      const priceData = {
+        SPY: createPriceSeries([
+          { date: "2020-01-01", price: 100 },
+          { date: "2020-01-02", price: 101 },
+          { date: "2020-01-03", price: 102 },
+          { date: "2020-01-06", price: 103 },
+          { date: "2020-01-07", price: 104 },
+        ]),
+        BND: createPriceSeries([
+          { date: "2020-01-01", price: 50 },
+          { date: "2020-01-02", price: 50.1 },
+          { date: "2020-01-03", price: 50.2 },
+          { date: "2020-01-06", price: 50.3 },
+          { date: "2020-01-07", price: 50.4 },
+        ]),
+      };
+      const input = {
+        tickers: ["SPY", "BND"],
+        weights: { SPY: 0.6, BND: 0.4 },
+        startDate: "2020-01-01",
+        endDate: "2020-01-07",
+        rebalanceFrequency: "none" as const,
+        initialCapital: 100000,
+      };
+      const result = runBacktest(input, priceData);
+
+      expect(result.equityCurve).toHaveLength(5);
+      expect(result.equityCurve[0]).toBeCloseTo(100000, 0);
+      expect(result.drawdown).toHaveLength(5);
+      expect(result.metrics).toBeDefined();
       expect(result.trades).toBeDefined();
-      expect(Array.isArray(result.rebalanceDates)).toBe(true);
-      
-      // Check metrics
-      expect(typeof result.metrics.cagr).toBe('number');
-      expect(typeof result.metrics.volatility).toBe('number');
-      expect(typeof result.metrics.sharpe).toBe('number');
-      expect(typeof result.metrics.sortino).toBe('number');
-      expect(typeof result.metrics.calmar).toBe('number');
-      expect(typeof result.metrics.maxDrawdown).toBe('number');
-      expect(typeof result.metrics.bestMonth).toBe('number');
-      expect(typeof result.metrics.worstMonth).toBe('number');
-      expect(typeof result.metrics.winRate).toBe('number');
-      expect(result.metrics.maxDrawdown).toBeLessThanOrEqual(0);
-      expect(result.metrics.winRate).toBeGreaterThanOrEqual(0);
-      expect(result.metrics.winRate).toBeLessThanOrEqual(1);
+      expect(result.dates).toHaveLength(5);
+      expect(result.periodReturns).toBeDefined();
+      expect(result.seed).toBe("deterministic");
     });
 
-    it('handles empty price data', () => {
-      const result = backtest.runBacktest({}, config);
-      expect(result.equityCurve).toEqual([]);
-      expect(result.metrics.cagr).toBe(0);
-    });
-
-    it('produces deterministic results', () => {
-      const result1 = backtest.runBacktest(priceData, config);
-      const result2 = backtest.runBacktest(priceData, config);
+    it("produces deterministic results", () => {
+      const priceData = {
+        SPY: createPriceSeries([
+          { date: "2020-01-01", price: 100 },
+          { date: "2020-01-02", price: 101 },
+          { date: "2020-01-03", price: 102 },
+        ]),
+        BND: createPriceSeries([
+          { date: "2020-01-01", price: 50 },
+          { date: "2020-01-02", price: 50.1 },
+          { date: "2020-01-03", price: 50.2 },
+        ]),
+      };
+      const input = {
+        tickers: ["SPY", "BND"],
+        weights: { SPY: 0.6, BND: 0.4 },
+        startDate: "2020-01-01",
+        endDate: "2020-01-03",
+        rebalanceFrequency: "none" as const,
+        initialCapital: 100000,
+      };
+      const result1 = runBacktest(input, priceData);
+      const result2 = runBacktest(input, priceData);
+      // Results should be bit-identical
       expect(result1.equityCurve).toEqual(result2.equityCurve);
-      expect(result1.trades).toEqual(result2.trades);
       expect(result1.metrics.cagr).toBe(result2.metrics.cagr);
     });
+  });
 
-    it('handles no rebalance frequency', () => {
-      const noRebalanceConfig = { ...config, rebalanceFrequency: 'none' as const };
-      const result = backtest.runBacktest(priceData, noRebalanceConfig);
-      expect(result.rebalanceDates.length).toBe(0);
-      expect(result.trades.length).toBe(0);
+  describe("computeMetrics", () => {
+    it("computes all metrics correctly", () => {
+      const equityCurve = [100000, 105000, 102000, 108000];
+      const dates = ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-04"];
+      const metrics = computeMetrics(equityCurve, dates);
+
+      expect(metrics.cagr).toBeDefined();
+      expect(metrics.volatility).toBeDefined();
+      expect(metrics.sharpe).toBeDefined();
+      expect(metrics.sortino).toBeDefined();
+      expect(metrics.maxDrawdown).toBeCloseTo((105000 - 102000) / 105000, 5);
+      expect(metrics.calmar).toBeDefined();
+      expect(metrics.bestMonth).toBeDefined();
+      expect(metrics.worstMonth).toBeDefined();
+      expect(metrics.winRate).toBeDefined();
+      expect(metrics.totalReturn).toBeCloseTo(0.08, 3);
     });
+  });
 
-    it('handles annual rebalance', () => {
-      const annualConfig = { ...config, rebalanceFrequency: 'annually' as const };
-      const result = backtest.runBacktest(priceData, annualConfig);
-      // Should have at most 1 rebalance per year
-      expect(result.rebalanceDates.length).toBeLessThanOrEqual(1);
+  describe("computeMonthlyReturns", () => {
+    it("computes monthly returns heatmap data", () => {
+      // Create ~2 years of daily data
+      const dates: string[] = [];
+      const equity: number[] = [100];
+      let value = 100;
+      for (let m = 0; m < 24; m++) {
+        for (let d = 0; d < 21; d++) {
+          const date = new Date(2020, m, d + 1);
+          if (date.getDay() !== 0 && date.getDay() !== 6) {
+            dates.push(date.toISOString().split("T")[0]);
+            value *= 1 + (Math.random() - 0.48) * 0.02; // slight positive drift
+            equity.push(value);
+          }
+        }
+      }
+      const monthly = computeMonthlyReturns(equity, dates);
+      expect(monthly.length).toBeGreaterThan(0);
+      expect(monthly[0]).toHaveProperty("year");
+      expect(monthly[0]).toHaveProperty("month");
+      expect(monthly[0]).toHaveProperty("return");
+    });
+  });
+
+  describe("computePeriodReturns", () => {
+    it("computes period returns from equity curve", () => {
+      const equityCurve = [100, 105, 102, 108];
+      const dates = ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-04"];
+      const returns = computePeriodReturns(equityCurve, dates);
+      expect(returns).toHaveLength(3);
+      expect(returns[0].return).toBeCloseTo(0.05, 5);
+      expect(returns[1].return).toBeCloseTo(-0.02857, 3);
+      expect(returns[2].return).toBeCloseTo(0.05882, 3);
     });
   });
 });

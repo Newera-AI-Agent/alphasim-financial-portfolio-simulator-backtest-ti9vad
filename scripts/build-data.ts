@@ -6,7 +6,7 @@ import { writeFileSync, mkdirSync } from "fs";
 import { gzipSync } from "zlib";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import universe from "../public/data/universe.json" assert { type: "json" };
+import universe from "../public/data/universe.json" with { type: "json" };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

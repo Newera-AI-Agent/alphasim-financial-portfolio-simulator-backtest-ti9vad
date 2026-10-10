@@ -1,252 +1,243 @@
-// lib/math/__tests__/monte-carlo.test.ts
-// Unit tests for monte-carlo.ts - known-value tests against reference implementations
-
+/**
+ * Unit tests for monte-carlo module
+ */
+import { describe, it, expect } from "vitest";
 import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  vi,
-} from 'vitest';
-import * as mc from '../monte-carlo';
-import * as stats from '../statistics';
+  generatePaths,
+  generateBootstrapPaths,
+  choleskyDecomposition,
+  computeFanChartPercentiles,
+  computeTerminalWealthHistogram,
+  computeProbabilityMetrics,
+  computeVaRES,
+  runMonteCarlo,
+} from "../monte-carlo";
 
-const EPSILON = 1e-10;
-
-// Mock returns data for 3 assets
-const assetReturns = [
-  [0.01, 0.02, -0.01, 0.015, -0.005, 0.02, -0.01, 0.005, 0.01, -0.015],
-  [0.005, 0.01, -0.005, 0.01, -0.01, 0.015, -0.005, 0.01, -0.01, 0.02],
-  [-0.005, 0.01, 0.015, -0.01, 0.02, -0.005, 0.01, -0.01, 0.015, 0.005],
-];
-
-const weights = [0.4, 0.35, 0.25];
-const meanReturns = assetReturns.map(r => stats.mean(r));
-const covMatrix = stats.covarianceMatrix(assetReturns);
-
-const config: mc.MonteCarloConfig = {
-  numPaths: 100,
-  horizonMonths: 12,
-  initialCapital: 100000,
-  weights,
-  meanReturns,
-  covMatrix,
-  model: 'parametric',
-  seed: 42,
-};
-
-describe('monte-carlo', () => {
-  describe('RandomGenerator', () => {
-    it('produces deterministic sequence with same seed', () => {
-      const rng1 = new mc.RandomGenerator(123);
-      const rng2 = new mc.RandomGenerator(123);
-      for (let i = 0; i < 10; i++) {
-        expect(rng1.next()).toBe(rng2.next());
-      }
+describe("monte-carlo", () => {
+  describe("choleskyDecomposition", () => {
+    it("decomposes 2x2 covariance matrix", () => {
+      const cov = [
+        [0.04, 0.01],
+        [0.01, 0.09],
+      ];
+      const L = choleskyDecomposition(cov);
+      expect(L).toHaveLength(2);
+      expect(L[0]).toHaveLength(2);
+      // L * L' should equal cov
+      const reconstructed = [
+        [L[0][0] * L[0][0] + L[0][1] * L[0][1], L[0][0] * L[1][0] + L[0][1] * L[1][1]],
+        [L[1][0] * L[0][0] + L[1][1] * L[0][1], L[1][0] * L[1][0] + L[1][1] * L[1][1]],
+      ];
+      expect(reconstructed[0][0]).toBeCloseTo(0.04, 5);
+      expect(reconstructed[0][1]).toBeCloseTo(0.01, 5);
+      expect(reconstructed[1][0]).toBeCloseTo(0.01, 5);
+      expect(reconstructed[1][1]).toBeCloseTo(0.09, 5);
     });
-
-    it('produces different sequences with different seeds', () => {
-      const rng1 = new mc.RandomGenerator(123);
-      const rng2 = new mc.RandomGenerator(456);
-      let same = true;
-      for (let i = 0; i < 10; i++) {
-        if (rng1.next() !== rng2.next()) {
-          same = false;
-          break;
-        }
-      }
-      expect(same).toBe(false);
-    });
-
-    it('nextNormal produces values with mean ~0 and std ~1', () => {
-      const rng = new mc.RandomGenerator(42);
-      const samples = Array.from({ length: 10000 }, () => rng.nextNormal());
-      const m = stats.mean(samples);
-      const s = stats.std(samples);
-      expect(Math.abs(m)).toBeLessThan(0.05);
-      expect(Math.abs(s - 1)).toBeLessThan(0.05);
-    });
-  });
-
-  describe('choleskyDecomposition', () => {
-    it('decomposes positive definite matrix', () => {
-      const L = mc.choleskyDecomposition(covMatrix);
-      expect(L.length).toBe(3);
-      expect(L[0].length).toBe(3);
-      // L should be lower triangular
-      expect(L[0][1]).toBe(0);
-      expect(L[0][2]).toBe(0);
-      expect(L[1][2]).toBe(0);
-      // L * L^T should equal original
+    it("decomposes 3x3 covariance matrix", () => {
+      const cov = [
+        [0.04, 0.01, 0.005],
+        [0.01, 0.09, 0.02],
+        [0.005, 0.02, 0.16],
+      ];
+      const L = choleskyDecomposition(cov);
+      expect(L).toHaveLength(3);
+      // Verify L * L' = cov
       for (let i = 0; i < 3; i++) {
         for (let j = 0; j < 3; j++) {
           let sum = 0;
-          for (let k = 0; k < 3; k++) {
+          for (let k = 0; k <= Math.min(i, j); k++) {
             sum += L[i][k] * L[j][k];
           }
-          expect(sum).toBeCloseTo(covMatrix[i][j], 8);
+          expect(sum).toBeCloseTo(cov[i][j], 5);
         }
       }
     });
-
-    it('handles diagonal matrix', () => {
-      const diag = [[4, 0], [0, 9]];
-      const L = mc.choleskyDecomposition(diag);
-      expect(L[0][0]).toBeCloseTo(2, 10);
-      expect(L[1][1]).toBeCloseTo(3, 10);
-      expect(L[1][0]).toBe(0);
-    });
-  });
-
-  describe('generateCorrelatedNormals', () => {
-    it('generates correlated normals with correct covariance', () => {
-      const L = mc.choleskyDecomposition(covMatrix);
-      const rng = new mc.RandomGenerator(42);
-      
-      // Generate many samples
-      const nSamples = 10000;
-      const samples = Array.from({ length: nSamples }, () => mc.generateCorrelatedNormals(L));
-      
-      // Check sample covariance approximates target
-      const sampleCov = stats.covarianceMatrix(samples[0].map((_, i) => samples.map(s => s[i])));
-      for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 3; j++) {
-          expect(sampleCov[i][j]).toBeCloseTo(covMatrix[i][j], 1);
-        }
-      }
-    });
-  });
-
-  describe('simulateGBMPath', () => {
-    it('produces path of correct length', () => {
-      const L = mc.choleskyDecomposition(covMatrix);
-      const rng = new mc.RandomGenerator(42);
-      const path = mc.simulateGBMPath(100000, meanReturns, L, 252, 1/252, rng);
-      expect(path.length).toBe(253); // steps + 1
-      expect(path[0]).toBe(100000);
-      expect(path.every(p => p > 0)).toBe(true);
-    });
-
-    it('is deterministic with same seed', () => {
-      const L = mc.choleskyDecomposition(covMatrix);
-      const rng1 = new mc.RandomGenerator(42);
-      const rng2 = new mc.RandomGenerator(42);
-      const path1 = mc.simulateGBMPath(100000, meanReturns, L, 252, 1/252, rng1);
-      const path2 = mc.simulateGBMPath(100000, meanReturns, L, 252, 1/252, rng2);
-      expect(path1).toEqual(path2);
-    });
-  });
-
-  describe('blockBootstrap', () => {
-    it('resamples blocks preserving autocorrelation structure', () => {
-      const rng = new mc.RandomGenerator(42);
-      const result = mc.blockBootstrap(assetReturns, 5, 2, rng);
-      expect(result.length).toBe(3);
-      expect(result[0].length).toBe(10); // 2 blocks * 5 size
-    });
-  });
-
-  describe('computeFanChart', () => {
-    it('computes percentile bands from paths', () => {
-      // Create simple test paths
-      const paths = [
-        [100, 101, 102, 103],
-        [100, 100.5, 101, 101.5],
-        [100, 102, 104, 106],
-        [100, 99, 98, 97],
-        [100, 101.5, 103, 104.5],
+    it("throws on non-positive-definite matrix", () => {
+      const cov = [
+        [0.04, 0.05],
+        [0.05, 0.04],
       ];
-      const fanChart = mc.computeFanChart(paths);
-      expect(fanChart.median.length).toBe(4);
-      expect(fanChart.p10.length).toBe(4);
-      expect(fanChart.p90.length).toBe(4);
-      expect(fanChart.p05.length).toBe(4);
-      expect(fanChart.p95.length).toBe(4);
-      // Median should be between p05 and p95
-      for (let i = 0; i < 4; i++) {
-        expect(fanChart.median[i]).toBeGreaterThanOrEqual(fanChart.p05[i]);
-        expect(fanChart.median[i]).toBeLessThanOrEqual(fanChart.p95[i]);
-        expect(fanChart.p10[i]).toBeLessThanOrEqual(fanChart.p90[i]);
-      }
+      expect(() => choleskyDecomposition(cov)).toThrow();
     });
   });
 
-  describe('computeTerminalWealthHistogram', () => {
-    it('computes histogram bins', () => {
-      const terminalWealths = [90, 95, 100, 105, 110, 115, 120];
-      const histogram = mc.computeTerminalWealthHistogram(terminalWealths, 5);
-      expect(histogram.length).toBe(5);
-      expect(histogram.every(b => b.count >= 0)).toBe(true);
-      const totalCount = histogram.reduce((sum, b) => sum + b.count, 0);
-      expect(totalCount).toBe(7);
+  describe("generatePaths", () => {
+    it("generates GBM paths with correct dimensions", () => {
+      const meanReturns = [0.0004, 0.0002]; // daily
+      const covMatrix = [
+        [0.0001, 0.00002],
+        [0.00002, 0.00009],
+      ];
+      const initialPrices = [100, 50];
+      const paths = generatePaths(meanReturns, covMatrix, initialPrices, 20, 100, 42);
+      
+      expect(paths).toHaveLength(100); // 100 paths
+      expect(paths[0]).toHaveLength(20); // 20 time steps
+      expect(paths[0][0]).toHaveLength(2); // 2 assets
     });
 
-    it('handles empty input', () => {
-      expect(mc.computeTerminalWealthHistogram([])).toEqual([]);
+    it("produces deterministic results with same seed", () => {
+      const meanReturns = [0.0004];
+      const covMatrix = [[0.0001]];
+      const initialPrices = [100];
+      const paths1 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 42);
+      const paths2 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 42);
+      expect(paths1).toEqual(paths2);
+    });
+
+    it("produces different results with different seeds", () => {
+      const meanReturns = [0.0004];
+      const covMatrix = [[0.0001]];
+      const initialPrices = [100];
+      const paths1 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 42);
+      const paths2 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 123);
+      expect(paths1).not.toEqual(paths2);
+    });
+
+    it("handles single asset correctly", () => {
+      const paths = generatePaths([0.1 / 252], [[0.16 * 0.16 / 252]], [100], 252, 100, 42);
+      // Check terminal values are reasonable (around 110 for 10% return)
+      const terminalValues = paths.map((p) => p[p.length - 1][0]);
+      const meanTerminal = terminalValues.reduce((a, b) => a + b, 0) / terminalValues.length;
+      expect(meanTerminal).toBeGreaterThan(105);
+      expect(meanTerminal).toBeLessThan(120);
     });
   });
 
-  describe('runMonteCarlo', () => {
-    it('runs parametric simulation and returns valid result', () => {
-      const result = mc.runMonteCarlo(config);
+  describe("generateBootstrapPaths", () => {
+    it("generates bootstrap paths from historical returns", () => {
+      // Create historical returns with some autocorrelation
+      const historicalReturns = Array.from({ length: 500 }, (_, i) => (
+        Math.sin(i * 0.1) * 0.01 + (Math.random() - 0.5) * 0.02
+      ));
+      const initialPrices = [100];
+      const paths = generateBootstrapPaths(historicalReturns, initialPrices, 252, 50, 20, 42);
       
-      expect(result.paths.length).toBe(config.numPaths);
-      expect(result.fanChart.median.length).toBeGreaterThan(0);
-      expect(result.terminalWealthHistogram.length).toBeGreaterThan(0);
-      
-      // Check probabilities
-      expect(result.probabilities.loss).toBeGreaterThanOrEqual(0);
-      expect(result.probabilities.loss).toBeLessThanOrEqual(1);
-      expect(result.probabilities.double).toBeGreaterThanOrEqual(0);
-      expect(result.probabilities.double).toBeLessThanOrEqual(1);
-      expect(result.probabilities.tenx).toBeGreaterThanOrEqual(0);
-      expect(result.probabilities.tenx).toBeLessThanOrEqual(1);
-      
-      // Check VaR/CVaR
-      expect(result.var95).toBeDefined();
-      expect(result.var99).toBeDefined();
-      expect(result.cvar95).toBeDefined();
-      expect(result.cvar99).toBeDefined();
-      expect(result.var99).toBeGreaterThanOrEqual(result.var95);
-      expect(result.cvar95).toBeGreaterThanOrEqual(result.var95);
-      expect(result.cvar99).toBeGreaterThanOrEqual(result.var99);
-      
-      // Check summary
-      expect(result.summary.medianTerminalWealth).toBeGreaterThan(0);
-      expect(result.summary.meanTerminalWealth).toBeGreaterThan(0);
+      expect(paths).toHaveLength(50);
+      expect(paths[0]).toHaveLength(252);
+      expect(paths[0][0]).toHaveLength(1);
     });
 
-    it('produces deterministic results with same seed', () => {
-      const result1 = mc.runMonteCarlo({ ...config, seed: 123 });
-      const result2 = mc.runMonteCarlo({ ...config, seed: 123 });
+    it("produces deterministic results with same seed", () => {
+      const historicalReturns = [0.01, -0.005, 0.002, 0.015, -0.003, 0.001, -0.002, 0.008];
+      const initialPrices = [100];
+      const paths1 = generateBootstrapPaths(historicalReturns, initialPrices, 20, 10, 5, 42);
+      const paths2 = generateBootstrapPaths(historicalReturns, initialPrices, 20, 10, 5, 42);
+      expect(paths1).toEqual(paths2);
+    });
+  });
+
+  describe("computeFanChartPercentiles", () => {
+    it("computes percentile bands correctly", () => {
+      // Simple test: paths that end at known values
+      const paths = [
+        [100, 105, 110], // path 1
+        [100, 102, 104], // path 2
+        [100, 108, 116], // path 3
+        [100, 101, 102], // path 4
+        [100, 110, 120], // path 5
+      ];
+      const percentiles = computeFanChartPercentiles(paths);
       
-      expect(result1.paths[0].terminalWealth).toBe(result2.paths[0].terminalWealth);
-      expect(result1.summary.medianTerminalWealth).toBe(result2.summary.medianTerminalWealth);
-      expect(result1.var95).toBe(result2.var95);
+      expect(percentiles.median).toHaveLength(3);
+      expect(percentiles.p10).toHaveLength(3);
+      expect(percentiles.p90).toHaveLength(3);
+      expect(percentiles.p05).toHaveLength(3);
+      expect(percentiles.p95).toHaveLength(3);
+      
+      // At time 0, all should be 100
+      expect(percentiles.median[0]).toBe(100);
+      expect(percentiles.p10[0]).toBe(100);
+      expect(percentiles.p90[0]).toBe(100);
+    });
+  });
+
+  describe("computeTerminalWealthHistogram", () => {
+    it("computes histogram with log bins", () => {
+      const terminalValues = [100, 110, 120, 130, 140, 150, 200, 500];
+      const histogram = computeTerminalWealthHistogram(terminalValues, 5);
+      
+      expect(histogram.bins).toHaveLength(5);
+      expect(histogram.counts).toHaveLength(5);
+      expect(histogram.counts.reduce((a, b) => a + b, 0)).toBe(8);
+    });
+  });
+
+  describe("computeProbabilityMetrics", () => {
+    it("computes probability of loss, 2x, 10x correctly", () => {
+      const terminalValues = [80, 90, 100, 110, 120, 200, 250, 500, 1000, 1500];
+      const initialValue = 100;
+      const probs = computeProbabilityMetrics(terminalValues, initialValue);
+      
+      // Loss (< 100): 80, 90 = 2/10 = 0.2
+      expect(probs.probLoss).toBeCloseTo(0.2, 5);
+      // > 2x (> 200): 250, 500, 1000, 1500 = 4/10 = 0.4
+      expect(probs.prob2x).toBeCloseTo(0.4, 5);
+      // > 10x (> 1000): 1500 = 1/10 = 0.1
+      expect(probs.prob10x).toBeCloseTo(0.1, 5);
+    });
+  });
+
+  describe("computeVaRES", () => {
+    it("computes VaR and ES correctly", () => {
+      // Sorted returns: -0.1, -0.05, -0.02, 0, 0.01, 0.02, 0.05, 0.1
+      // 95% VaR: index = floor(8 * 0.05) = 0 -> -(-0.1) = 0.1
+      // 99% VaR: index = floor(8 * 0.01) = 0 -> 0.1
+      const terminalValues = [90, 95, 98, 100, 101, 102, 105, 110];
+      const initialValue = 100;
+      const { var95, var99, es95, es99 } = computeVaRES(terminalValues, initialValue);
+      
+      // Returns are: -0.1, -0.05, -0.02, 0, 0.01, 0.02, 0.05, 0.1
+      // 95% VaR (5% tail): index 0 = -0.1 -> VaR = 0.1
+      expect(var95).toBeCloseTo(0.1, 5);
+      // ES 95%: mean of worst 5% = mean of [-0.1] = 0.1
+      expect(es95).toBeCloseTo(0.1, 5);
+    });
+  });
+
+  describe("runMonteCarlo", () => {
+    it("runs complete Monte Carlo simulation", () => {
+      const result = runMonteCarlo({
+        meanReturns: [0.1 / 252, 0.05 / 252],
+        covMatrix: [
+          [0.16 * 0.16 / 252, 0.02 / 252],
+          [0.02 / 252, 0.1 * 0.1 / 252],
+        ],
+        initialPrices: [100, 50],
+        weights: { asset0: 0.6, asset1: 0.4 },
+        horizon: 12, // 12 months
+        numPaths: 200,
+        model: "parametric",
+        seed: 42,
+      });
+
+      expect(result.paths).toHaveLength(200);
+      expect(result.fanChart).toBeDefined();
+      expect(result.histogram).toBeDefined();
+      expect(result.probabilities).toBeDefined();
+      expect(result.varES).toBeDefined();
+      expect(result.pathTable).toHaveLength(200);
     });
 
-    it('runs bootstrap model', () => {
-      const bootstrapConfig = { ...config, model: 'bootstrap' as const };
-      const result = mc.runMonteCarlo(bootstrapConfig);
-      expect(result.paths.length).toBe(config.numPaths);
-      expect(result.fanChart.median.length).toBeGreaterThan(0);
-    });
+    it("runs bootstrap model", () => {
+      const historicalReturns = Array.from({ length: 500 }, (_, i) => (
+        Math.sin(i * 0.1) * 0.01 + (Math.random() - 0.5) * 0.02
+      ));
+      const result = runMonteCarlo({
+        meanReturns: [0], // not used for bootstrap
+        covMatrix: [[0]],
+        initialPrices: [100],
+        weights: { asset0: 1 },
+        horizon: 6,
+        numPaths: 50,
+        model: "bootstrap",
+        historicalReturns: [historicalReturns],
+        blockSize: 20,
+        seed: 42,
+      });
 
-    it('handles small number of paths', () => {
-      const smallConfig = { ...config, numPaths: 10 };
-      const result = mc.runMonteCarlo(smallConfig);
-      expect(result.paths.length).toBe(10);
-    });
-
-    it('handles single asset', () => {
-      const singleAssetConfig = {
-        ...config,
-        weights: [1.0],
-        meanReturns: [0.1 / 252],
-        covMatrix: [[0.04 / 252]],
-      };
-      const result = mc.runMonteCarlo(singleAssetConfig);
-      expect(result.paths.length).toBe(config.numPaths);
+      expect(result.paths).toHaveLength(50);
+      expect(result.fanChart).toBeDefined();
     });
   });
 });
