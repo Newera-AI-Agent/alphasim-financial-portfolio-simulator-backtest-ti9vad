@@ -81,3 +81,12 @@ Durable session memory for this VM job chain. Each line is one step or wind-down
 - [2026-10-09T23:15:20.240Z | VM 3/3] CONTRACT REQ-019 -> complete: Historical Backtest (/backtest) implemented with config panel, equity curve chart, drawdown chart, monthly heatmap, metrics, trade log, CSV export - verified by build output
 - [2026-10-09T23:15:25.926Z | VM 3/3] CONTRACT REQ-020 -> complete: Monte Carlo Simulation (/monte-carlo) implemented with config panel, fan chart, histogram, metrics, path table, CSV export, web worker for performance - verified by build output
 - [2026-10-09T23:18:30.639Z | VM 3/3] DEADLINE reached at step 330 — handoff written for the next VM or an explicit resume.
+- [2026-10-10T04:10:18.012Z | VM 1/3] boot: VM 1/3 online (job vm-mv1vlh2n-33jsw3jr, 30 min budget)
+- [2026-10-10T04:10:18.014Z | VM 1/3] self-check PASS: shell: VERIFIED (the harness executed bash on this VM at boot); node: v24.21.0; npm: 11.19.0; python3: Python 3.12.3; git: repo checked out @ 6ff127d; filesystem: WRITABLE (the harness wrote + read back a probe file); skills: 24 knowledge docs in .newera/skills/ (list_skills / read_skill); project: 
+- [2026-10-10T04:10:32.709Z | VM 1/3] boot auto-setup: npm install --no-audit --no-fund ok
+- [2026-10-10T04:10:55.796Z | VM 1/3] VERIFIED green: npm run build 2>&1 | tee /tmp/build.log
+- [2026-10-10T04:21:36.923Z | VM 1/3] VERIFIED green: npm run build 2>&1 | head -100
+- [2026-10-10T04:22:43.119Z | VM 1/3] VERIFIED green: npm run build 2>&1 | head -50
+- [2026-10-10T04:23:45.801Z | VM 1/3] VERIFIED green: npm run build 2>&1 | head -60
+- [2026-10-10T04:33:30.944Z | VM 1/3] DEADLINE reached at step 54 — handoff written for the next VM or an explicit resume.
+- [2026-10-10T04:33:30.945Z | VM 1/3] deploy self-heal: patching next.config for static export and rebuilding

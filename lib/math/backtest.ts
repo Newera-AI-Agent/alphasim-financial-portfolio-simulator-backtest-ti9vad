@@ -18,7 +18,7 @@ import {
   covarianceMatrix,
   multiplyMatrixVector,
 } from "./statistics";
-import { normalizeWeights, validateWeights, Trade, computeTurnover } from "./portfolio";
+import { normalizeWeights, validateWeights, Trade, computeTurnover, rebalanceWeights, computePeriodReturns } from "./portfolio";
 
 // Types
 export interface PriceSeries {
