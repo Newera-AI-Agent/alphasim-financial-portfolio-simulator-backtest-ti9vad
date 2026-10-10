@@ -11,8 +11,8 @@ import {
   runBacktest,
   computeMetrics,
   computeMonthlyReturns,
-  computePeriodReturns,
 } from "../backtest";
+import { computePeriodReturns } from "../portfolio";
 
 // Helper to create PriceSeries from array
 function createPriceSeries(prices: Array<{ date: string; price: number }>): Record<string, number> {

@@ -39,11 +39,11 @@ Scripts: `dev`, `build`, `start`, `lint`, `typecheck`, `test`, `test:watch`, `te
 - exports: (nothing public)
 
 ### `lib/math/__tests__/backtest.test.ts` - 263 lines
-- imports: `lib/math/backtest.ts`
+- imports: `lib/math/backtest.ts`, `lib/math/portfolio.ts`
 - exports: (nothing public)
 
 ### `lib/math/__tests__/monte-carlo.test.ts` - 244 lines
-- imports: `lib/math/monte-carlo.ts`
+- imports: `lib/math/monte-carlo.ts`, `lib/math/statistics.ts`
 - exports: (nothing public)
 
 ### `lib/math/__tests__/portfolio.test.ts` - 214 lines

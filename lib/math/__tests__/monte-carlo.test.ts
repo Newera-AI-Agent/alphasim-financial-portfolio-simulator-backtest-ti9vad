@@ -5,13 +5,13 @@ import { describe, it, expect } from "vitest";
 import {
   generatePaths,
   generateBootstrapPaths,
-  choleskyDecomposition,
   computeFanChartPercentiles,
   computeTerminalWealthHistogram,
   computeProbabilityMetrics,
   computeVaRES,
   runMonteCarlo,
 } from "../monte-carlo";
+import { choleskyDecomposition } from "../statistics";
 
 describe("monte-carlo", () => {
   describe("choleskyDecomposition", () => {
@@ -69,7 +69,7 @@ describe("monte-carlo", () => {
         [0.00002, 0.00009],
       ];
       const initialPrices = [100, 50];
-      const paths = generatePaths(meanReturns, covMatrix, initialPrices, 20, 100, 42);
+      const paths = generatePaths(meanReturns, covMatrix, 100, 20, initialPrices, 42);
       
       expect(paths).toHaveLength(100); // 100 paths
       expect(paths[0]).toHaveLength(20); // 20 time steps
@@ -80,8 +80,8 @@ describe("monte-carlo", () => {
       const meanReturns = [0.0004];
       const covMatrix = [[0.0001]];
       const initialPrices = [100];
-      const paths1 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 42);
-      const paths2 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 42);
+      const paths1 = generatePaths(meanReturns, covMatrix, 10, 10, initialPrices, 42);
+      const paths2 = generatePaths(meanReturns, covMatrix, 10, 10, initialPrices, 42);
       expect(paths1).toEqual(paths2);
     });
 
@@ -89,13 +89,13 @@ describe("monte-carlo", () => {
       const meanReturns = [0.0004];
       const covMatrix = [[0.0001]];
       const initialPrices = [100];
-      const paths1 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 42);
-      const paths2 = generatePaths(meanReturns, covMatrix, initialPrices, 10, 10, 123);
+      const paths1 = generatePaths(meanReturns, covMatrix, 10, 10, initialPrices, 42);
+      const paths2 = generatePaths(meanReturns, covMatrix, 10, 10, initialPrices, 123);
       expect(paths1).not.toEqual(paths2);
     });
 
     it("handles single asset correctly", () => {
-      const paths = generatePaths([0.1 / 252], [[0.16 * 0.16 / 252]], [100], 252, 100, 42);
+      const paths = generatePaths([0.1 / 252], [[0.16 * 0.16 / 252]], 100, 252, [100], 42);
       // Check terminal values are reasonable (around 110 for 10% return)
       const terminalValues = paths.map((p) => p[p.length - 1][0]);
       const meanTerminal = terminalValues.reduce((a, b) => a + b, 0) / terminalValues.length;
@@ -111,7 +111,7 @@ describe("monte-carlo", () => {
         Math.sin(i * 0.1) * 0.01 + (Math.random() - 0.5) * 0.02
       ));
       const initialPrices = [100];
-      const paths = generateBootstrapPaths(historicalReturns, initialPrices, 252, 50, 20, 42);
+      const paths = generateBootstrapPaths(historicalReturns, 50, 252, initialPrices, 20, 42);
       
       expect(paths).toHaveLength(50);
       expect(paths[0]).toHaveLength(252);
@@ -121,8 +121,8 @@ describe("monte-carlo", () => {
     it("produces deterministic results with same seed", () => {
       const historicalReturns = [0.01, -0.005, 0.002, 0.015, -0.003, 0.001, -0.002, 0.008];
       const initialPrices = [100];
-      const paths1 = generateBootstrapPaths(historicalReturns, initialPrices, 20, 10, 5, 42);
-      const paths2 = generateBootstrapPaths(historicalReturns, initialPrices, 20, 10, 5, 42);
+      const paths1 = generateBootstrapPaths(historicalReturns, 10, 20, initialPrices, 5, 42);
+      const paths2 = generateBootstrapPaths(historicalReturns, 10, 20, initialPrices, 5, 42);
       expect(paths1).toEqual(paths2);
     });
   });
@@ -198,23 +198,25 @@ describe("monte-carlo", () => {
   describe("runMonteCarlo", () => {
     it("runs complete Monte Carlo simulation", () => {
       const result = runMonteCarlo({
-        meanReturns: [0.1 / 252, 0.05 / 252],
-        covMatrix: [
-          [0.16 * 0.16 / 252, 0.02 / 252],
-          [0.02 / 252, 0.1 * 0.1 / 252],
-        ],
-        initialPrices: [100, 50],
-        weights: { asset0: 0.6, asset1: 0.4 },
-        horizon: 12, // 12 months
-        numPaths: 200,
+        tickers: ["SPY", "BND"],
+        weights: { SPY: 0.6, BND: 0.4 },
+        horizonMonths: 12,
+        initialCapital: 10000,
+        paths: 200,
         model: "parametric",
         seed: 42,
+        expectedReturns: [0.1, 0.05],
+        covarianceMatrix: [
+          [0.16 * 0.16, 0.02],
+          [0.02, 0.1 * 0.1],
+        ],
       });
 
       expect(result.paths).toHaveLength(200);
+      expect(result.equityCurves).toHaveLength(200);
       expect(result.fanChart).toBeDefined();
       expect(result.histogram).toBeDefined();
-      expect(result.probabilities).toBeDefined();
+      expect(result.probabilityMetrics).toBeDefined();
       expect(result.varES).toBeDefined();
       expect(result.pathTable).toHaveLength(200);
     });
@@ -224,12 +226,11 @@ describe("monte-carlo", () => {
         Math.sin(i * 0.1) * 0.01 + (Math.random() - 0.5) * 0.02
       ));
       const result = runMonteCarlo({
-        meanReturns: [0], // not used for bootstrap
-        covMatrix: [[0]],
-        initialPrices: [100],
-        weights: { asset0: 1 },
-        horizon: 6,
-        numPaths: 50,
+        tickers: ["SPY"],
+        weights: { SPY: 1 },
+        horizonMonths: 6,
+        initialCapital: 10000,
+        paths: 50,
         model: "bootstrap",
         historicalReturns: [historicalReturns],
         blockSize: 20,
@@ -237,6 +238,7 @@ describe("monte-carlo", () => {
       });
 
       expect(result.paths).toHaveLength(50);
+      expect(result.equityCurves).toHaveLength(50);
       expect(result.fanChart).toBeDefined();
     });
   });
